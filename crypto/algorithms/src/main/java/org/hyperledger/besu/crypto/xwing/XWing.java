@@ -17,7 +17,6 @@ package org.hyperledger.besu.crypto.xwing;
 
 import java.security.KeyFactory;
 import java.security.KeyPairGenerator;
-import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
@@ -31,6 +30,8 @@ import org.bouncycastle.jcajce.spec.KEMExtractSpec;
 import org.bouncycastle.jcajce.spec.KEMGenerateSpec;
 import org.bouncycastle.jcajce.spec.MLKEMParameterSpec;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.hyperledger.besu.crypto.MessageDigestFactory;
+import org.hyperledger.besu.crypto.SecureRandomProvider;
 
 /**
  * X-Wing hybrid KEM (ML-KEM-768 + X25519), following draft-connolly-cfrg-xwing-kem.
@@ -70,7 +71,7 @@ public final class XWing {
   private static final int MLKEM_CT_BYTES = 1088; // ML-KEM-768 암호문 원시 길이
   private static final int X25519_RAW_BYTES = 32; // X25519 공개키 원시 길이
 
-  private static final SecureRandom RNG = new SecureRandom();
+  private static final SecureRandom RNG = SecureRandomProvider.publicSecureRandom();
 
   // BouncyCastle의 ML-KEM/X25519 공개키는 SPKI(X.509)로 감싸여 나온다. 원시 바이트만 전송했다가
   // 다시 키 객체로 복원할 때 붙일 "SPKI 헤더"를 런타임에 1회 추출해 둔다(하드코딩 대신 → provider가
@@ -258,7 +259,7 @@ public final class XWing {
   }
 
   private static byte[] sha3(final byte[] in) throws Exception {
-    return MessageDigest.getInstance("SHA3-256").digest(in);
+    return MessageDigestFactory.create("SHA3-256").digest(in);
   }
 
   private static byte[] head(final byte[] a, final int n) {

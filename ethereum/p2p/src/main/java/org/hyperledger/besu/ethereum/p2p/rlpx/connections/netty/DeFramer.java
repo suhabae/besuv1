@@ -186,6 +186,11 @@ final class DeFramer extends ByteToMessageDecoder {
           ctx.close();
           return;
         }
+        // [측정용] T7: 상대 Hello 복호·nodeId 검증 통과(암호화 Hello 인증됨)
+        final HandshakeTimings timings = ctx.channel().attr(HandshakeTimings.KEY).get();
+        if (timings != null) {
+          timings.t7HelloAuthenticated = System.nanoTime();
+        }
         if (peerInfo.getVersion() >= 5) {
           LOG.trace("Enable compression for p2pVersion: {}", peerInfo.getVersion());
           framer.enableCompression();
@@ -247,6 +252,11 @@ final class DeFramer extends ByteToMessageDecoder {
                 new ApiHandler(
                     capabilityMultiplexer, connection, connectionEventDispatcher, waitingForPong),
                 new MessageFramer(capabilityMultiplexer, framer));
+        // [측정용] T8: peer 확립 직전 시각 기록 + 개시자 측 구간 요약 로그
+        if (timings != null) {
+          timings.t8PeerEstablished = System.nanoTime();
+          LOG.info("Handshake timing nodeId={} {}", authenticatedNodeId, timings.summaryMicros());
+        }
         connectFuture.complete(connection);
 
       } else if (message.getCode() == WireMessageCodes.DISCONNECT) {

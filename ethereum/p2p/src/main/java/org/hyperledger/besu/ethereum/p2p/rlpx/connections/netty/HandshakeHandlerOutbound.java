@@ -85,10 +85,19 @@ final class HandshakeHandlerOutbound extends AbstractHandshakeHandler {
   @Override
   public void channelActive(final ChannelHandlerContext ctx) throws Exception {
     super.channelActive(ctx);
+    // [측정용] T1: TCP 연결됨(channelActive)
+    final HandshakeTimings timings = ctx.channel().attr(HandshakeTimings.KEY).get();
+    if (timings != null) {
+      timings.t1ChannelActive = System.nanoTime();
+    }
     ctx.writeAndFlush(first)
         .addListener(
             f -> {
               if (f.isSuccess()) {
+                // [측정용] T2: Auth 전송 완료
+                if (timings != null) {
+                  timings.t2AuthSent = System.nanoTime();
+                }
                 LOG.trace(
                     "Wrote initial crypto handshake message to {}.", ctx.channel().remoteAddress());
               }

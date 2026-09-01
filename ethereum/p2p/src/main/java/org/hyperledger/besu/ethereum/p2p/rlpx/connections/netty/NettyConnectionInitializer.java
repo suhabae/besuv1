@@ -334,12 +334,16 @@ public class NettyConnectionInitializer
     final CompletableFuture<PeerConnection> connectionFuture = new CompletableFuture<>();
 
     final EnodeURL enode = peer.getEnodeURL();
+    // [측정용] T0: TCP connect 시작 시각을 기록하고 채널 속성으로 부착(개시자 측만 측정)
+    final HandshakeTimings timings = new HandshakeTimings();
+    timings.t0ConnectStart = System.nanoTime();
     new Bootstrap()
         .group(workers)
         .channel(NioSocketChannel.class)
         .remoteAddress(new InetSocketAddress(enode.getIp(), enode.getListeningPort().get()))
         .option(ChannelOption.TCP_NODELAY, true)
         .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, TIMEOUT_SECONDS * 1000)
+        .attr(HandshakeTimings.KEY, timings)
         .handler(outboundChannelInitializer(peer, connectionFuture))
         .connect()
         .addListener(

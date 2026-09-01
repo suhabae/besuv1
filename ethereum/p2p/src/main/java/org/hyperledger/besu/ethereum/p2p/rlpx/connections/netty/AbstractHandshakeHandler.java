@@ -99,12 +99,21 @@ abstract class AbstractHandshakeHandler extends SimpleChannelInboundHandler<Byte
 
   @Override
   protected final void channelRead0(final ChannelHandlerContext ctx, final ByteBuf msg) {
+    // [측정용] T5: 개시자가 첫 inbound(=Ack)를 받은 시각(응답자 측은 timings==null 이라 건너뜀)
+    final HandshakeTimings timings = ctx.channel().attr(HandshakeTimings.KEY).get();
+    if (timings != null && timings.t5AckReceived == 0L) {
+      timings.t5AckReceived = System.nanoTime();
+    }
     final Optional<ByteBuf> nextMsg = nextHandshakeMessage(msg);
     if (nextMsg.isPresent()) {
       ctx.writeAndFlush(nextMsg.get());
     } else if (handshaker.getStatus() != Handshaker.HandshakeStatus.SUCCESS) {
       LOG.debug("waiting for more bytes");
     } else {
+      // [측정용] T6: HandshakeSecrets 생성 완료(SUCCESS)
+      if (timings != null) {
+        timings.t6SecretsReady = System.nanoTime();
+      }
 
       final Bytes nodeId = handshaker.partyPubKey().getEncodedBytes();
       if (!localNode.isReady()) {
