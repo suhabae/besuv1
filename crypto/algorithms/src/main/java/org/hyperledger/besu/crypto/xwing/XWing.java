@@ -13,7 +13,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.xwing;
+package org.hyperledger.besu.crypto.xwing;
 
 import java.security.KeyFactory;
 import java.security.KeyPairGenerator;
@@ -45,6 +45,9 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
  *
  * <p>"무슨 도구로?" — 순수 자바 + BouncyCastle provider("BC"). Besu가 이미 번들한 라이브러리라 추가
  * 의존성이 없다. 해시는 JDK 표준 SHA3-256(드래프트 규정).
+ *
+ * <p>배치: crypto 모듈의 재사용 가능한 암호 primitive(SECP256K1 과 동급). 핸드셰이크 프로토콜
+ * (XWingHandshaker)은 ethereum/p2p 쪽에서 이 primitive 를 사용한다.
  *
  * <p>신원 모델(컨소시엄): enode/nodeId 등 노드 신원은 기존 secp256k1을 유지하고, 이 X-Wing 정적
  * 공개키는 컨소시엄 주소록으로 사전 배포(PDK)해 전송계층 핸드셰이크에만 쓴다.

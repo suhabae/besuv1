@@ -1,4 +1,4 @@
-package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies;
+package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.xwing;
 
 import java.math.BigInteger;
 import java.security.KeyFactory;

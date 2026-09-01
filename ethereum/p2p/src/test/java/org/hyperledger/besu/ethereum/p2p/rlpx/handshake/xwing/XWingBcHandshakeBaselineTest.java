@@ -1,4 +1,4 @@
-package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies;
+package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.xwing;
 
 // ── import 문: 이 파일에서 쓸 클래스들이 어느 패키지에 있는지 컴파일러에게 알려주는 자바 문법 ──
 import java.security.KeyFactory;                 // 원시 바이트 → 공개키 객체 복원용 (JDK 표준)
