@@ -22,11 +22,13 @@ import org.hyperledger.besu.cryptoservices.NodeKey;
 import org.hyperledger.besu.cryptoservices.NodeKeyUtils;
 import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.Handshaker;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.apache.tuweni.bytes.Bytes;
 import org.junit.jupiter.api.Test;
 
@@ -100,5 +102,109 @@ class XWingHandshakerTest {
       // ok
     }
     assertThat(initiator.getStatus()).isEqualTo(Handshaker.HandshakeStatus.FAILED);
+  }
+
+  /**
+   * [framing] Auth(≈3.6KB)가 TCP/Netty 에서 2048B + 나머지로 쪼개져 도착해도 재조립되어 정상 처리되는지.
+   * 이것이 라이브에서 net_peerCount=0x0 을 유발한 fragmentation 의 회귀 테스트다.
+   */
+  @Test
+  void fragmentedAuthReassemblesAndCompletes() throws Exception {
+    final NodeKey initNodeKey = NodeKeyUtils.generate();
+    final NodeKey respNodeKey = NodeKeyUtils.generate();
+    final XWing.KeyPair initXW = XWing.generateKeyPair();
+    final XWing.KeyPair respXW = XWing.generateKeyPair();
+    final Map<Bytes, byte[]> book = new HashMap<>();
+    book.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
+    book.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
+
+    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get);
+    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get);
+    initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
+    responder.prepareResponder(respNodeKey);
+
+    final byte[] authFramed = toBytes(initiator.firstMessage());
+    assertThat(authFramed.length).isGreaterThan(2048); // 실제로 조각나는 크기여야 의미가 있음
+    final ByteBuf ack = feedFragmented(responder, authFramed, 2048).orElseThrow();
+
+    final ByteBuf conf = initiator.handleMessage(ack).orElseThrow();
+    assertThat(responder.handleMessage(conf)).isEmpty();
+    assertThat(initiator.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
+    assertThat(responder.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
+    assertThat(initiator.secrets().equals(responder.secrets(), true)).isTrue();
+  }
+
+  /** [framing] ACK(≈2.4KB)도 2048B 를 넘으므로 개시자 수신 시 조각난다. 개시자 재조립 경로 검증. */
+  @Test
+  void fragmentedAckReassemblesOnInitiator() throws Exception {
+    final NodeKey initNodeKey = NodeKeyUtils.generate();
+    final NodeKey respNodeKey = NodeKeyUtils.generate();
+    final XWing.KeyPair initXW = XWing.generateKeyPair();
+    final XWing.KeyPair respXW = XWing.generateKeyPair();
+    final Map<Bytes, byte[]> book = new HashMap<>();
+    book.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
+    book.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
+
+    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get);
+    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get);
+    initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
+    responder.prepareResponder(respNodeKey);
+
+    final ByteBuf auth = initiator.firstMessage();
+    final byte[] ackFramed = toBytes(responder.handleMessage(auth).orElseThrow());
+    assertThat(ackFramed.length).isGreaterThan(2048);
+
+    final ByteBuf conf = feedFragmented(initiator, ackFramed, 2048).orElseThrow();
+    assertThat(responder.handleMessage(conf)).isEmpty();
+    assertThat(initiator.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
+    assertThat(responder.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
+    assertThat(initiator.secrets().equals(responder.secrets(), true)).isTrue();
+  }
+
+  /** [framing] 극단적 조각화: Auth 를 1바이트씩 흘려넣어도 정확히 마지막 바이트에서만 완성되어야 함. */
+  @Test
+  void byteByByteFragmentationReassembles() throws Exception {
+    final NodeKey initNodeKey = NodeKeyUtils.generate();
+    final NodeKey respNodeKey = NodeKeyUtils.generate();
+    final XWing.KeyPair initXW = XWing.generateKeyPair();
+    final XWing.KeyPair respXW = XWing.generateKeyPair();
+    final Map<Bytes, byte[]> book = new HashMap<>();
+    book.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
+    book.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
+
+    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get);
+    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get);
+    initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
+    responder.prepareResponder(respNodeKey);
+
+    final byte[] authFramed = toBytes(initiator.firstMessage());
+    final ByteBuf ack = feedFragmented(responder, authFramed, 1).orElseThrow();
+
+    final ByteBuf conf = initiator.handleMessage(ack).orElseThrow();
+    assertThat(responder.handleMessage(conf)).isEmpty();
+    assertThat(initiator.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
+    assertThat(responder.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
+    assertThat(initiator.secrets().equals(responder.secrets(), true)).isTrue();
+  }
+
+  /** framed 바이트열을 chunkSize 바이트씩 쪼개 handleMessage 에 흘려넣고, 나온 응답(있으면)을 반환. */
+  private static Optional<ByteBuf> feedFragmented(
+      final XWingHandshaker hs, final byte[] framed, final int chunkSize) throws Exception {
+    Optional<ByteBuf> response = Optional.empty();
+    for (int off = 0; off < framed.length; off += chunkSize) {
+      final int end = Math.min(off + chunkSize, framed.length);
+      final Optional<ByteBuf> r =
+          hs.handleMessage(Unpooled.wrappedBuffer(Arrays.copyOfRange(framed, off, end)));
+      if (r.isPresent()) {
+        response = r; // 완전한 프레임이 모이기 전까지는 empty 여야 하고, 마지막에만 응답이 나옴
+      }
+    }
+    return response;
+  }
+
+  private static byte[] toBytes(final ByteBuf buf) {
+    final byte[] b = new byte[buf.readableBytes()];
+    buf.getBytes(buf.readerIndex(), b);
+    return b;
   }
 }

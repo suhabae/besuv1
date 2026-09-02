@@ -21,6 +21,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import javax.crypto.KeyAgreement;
@@ -111,6 +112,66 @@ public final class XWing {
       final byte[] ekRaw = Arrays.copyOfRange(ek, ek.length - MLKEM_EK_BYTES, ek.length);
       return concat(ekRaw, rawX25519(x25519.getPublic()));
     }
+
+    /**
+     * 개인키까지 포함한 직렬화(노드 정적키 파일 보관용). 형식: 4개의 [4바이트 big-endian 길이][DER]
+     * 청크 = [ ML-KEM priv(PKCS8), ML-KEM pub(X509), X25519 priv(PKCS8), X25519 pub(X509) ].
+     * (crypto 모듈은 RLP 의존이 없어 수동 길이-프리픽스 사용.)
+     */
+    public byte[] privateKeyBundle() {
+      return concat(
+          lenPrefixed(mlkem.getPrivate().getEncoded()),
+          lenPrefixed(mlkem.getPublic().getEncoded()),
+          lenPrefixed(x25519.getPrivate().getEncoded()),
+          lenPrefixed(x25519.getPublic().getEncoded()));
+    }
+  }
+
+  /** {@link KeyPair#privateKeyBundle()} 로 저장한 번들에서 키쌍을 복원. */
+  public static KeyPair keyPairFromPrivateBundle(final byte[] bundle) {
+    try {
+      final int[] off = {0};
+      final byte[] mkPriv = readChunk(bundle, off);
+      final byte[] mkPub = readChunk(bundle, off);
+      final byte[] xPriv = readChunk(bundle, off);
+      final byte[] xPub = readChunk(bundle, off);
+      final KeyFactory mkf = KeyFactory.getInstance("ML-KEM", "BC");
+      final KeyFactory xf = KeyFactory.getInstance("X25519", "BC");
+      final java.security.KeyPair mk =
+          new java.security.KeyPair(
+              mkf.generatePublic(new X509EncodedKeySpec(mkPub)),
+              mkf.generatePrivate(new PKCS8EncodedKeySpec(mkPriv)));
+      final java.security.KeyPair xk =
+          new java.security.KeyPair(
+              xf.generatePublic(new X509EncodedKeySpec(xPub)),
+              xf.generatePrivate(new PKCS8EncodedKeySpec(xPriv)));
+      return new KeyPair(mk, xk);
+    } catch (final Exception e) {
+      throw new IllegalStateException("X-Wing 키 번들 복원 실패", e);
+    }
+  }
+
+  private static byte[] lenPrefixed(final byte[] b) {
+    final byte[] out = new byte[4 + b.length];
+    out[0] = (byte) (b.length >>> 24);
+    out[1] = (byte) (b.length >>> 16);
+    out[2] = (byte) (b.length >>> 8);
+    out[3] = (byte) b.length;
+    System.arraycopy(b, 0, out, 4, b.length);
+    return out;
+  }
+
+  private static byte[] readChunk(final byte[] src, final int[] off) {
+    final int p = off[0];
+    final int len =
+        ((src[p] & 0xff) << 24)
+            | ((src[p + 1] & 0xff) << 16)
+            | ((src[p + 2] & 0xff) << 8)
+            | (src[p + 3] & 0xff);
+    final byte[] out = new byte[len];
+    System.arraycopy(src, p + 4, out, 0, len);
+    off[0] = p + 4 + len;
+    return out;
   }
 
   /** 캡슐화 결과: 전송용 암호문(1120B) + 공유비밀(32B). */

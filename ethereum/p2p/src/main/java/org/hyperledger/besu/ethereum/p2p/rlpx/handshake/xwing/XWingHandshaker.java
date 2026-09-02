@@ -31,6 +31,7 @@ import org.hyperledger.besu.ethereum.rlp.RLP;
 import org.hyperledger.besu.ethereum.rlp.RLPInput;
 
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -39,6 +40,8 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.apache.tuweni.bytes.Bytes;
 import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Post-quantum RLPx handshaker based on the X-Wing hybrid KEM (ML-KEM-768 + X25519).
@@ -68,9 +71,22 @@ import org.apache.tuweni.bytes.Bytes32;
  */
 public class XWingHandshaker implements Handshaker {
 
+  private static final Logger LOG = LoggerFactory.getLogger(XWingHandshaker.class);
+
   private static final int SECP_PUBKEY_BYTES = 64;
   private static final int NONCE_BYTES = 32;
   private static final SecureRandom RANDOM = SecureRandomProvider.publicSecureRandom();
+
+  // [transport framing] 각 핸드셰이크 패킷(Auth/ACK/Conf)은 on-wire 에서 "2바이트 big-endian
+  // 길이 접두어 ‖ 본문" 형태로 나간다. 이는 RLPx/EIP-8 이 handshake packet 크기를 2바이트 헤더로
+  // 붙이는 관례를 그대로 따른 것이다(암호 봉투는 ECIES 가 아닌 KEM 기반으로 다름). TCP 는 메시지
+  // 경계를 보존하지 않으므로, 수신 측은 이 길이만큼 바이트가 다 모일 때까지 누적한 뒤 파싱한다.
+  private static final int LENGTH_PREFIX_BYTES = 2;
+  private static final int MAX_FRAME_BODY = 0xFFFF; // 2바이트 길이의 최대(65535B)
+
+  // 수신 누적 버퍼: 완전한 프레임 1개가 모일 때까지 조각을 이어붙인다.
+  private byte[] inbound = new byte[0];
+  private int inboundReadCount; // 관측용: 한 프레임을 모으는 데 걸린 read 횟수
 
   // 도메인 분리 라벨 (KDF/태그 유도용)
   private static final Bytes L_AES = Bytes.of('x', 'w', 'a', 'e', 's');
@@ -162,7 +178,10 @@ public class XWingHandshaker implements Handshaker {
       out.writeBytes(Bytes.wrap(encR.ciphertext())); // CT_R
       out.writeBytes(Bytes.wrap(nI)); // n_I
       out.endList();
-      return Unpooled.wrappedBuffer(out.encoded().toArrayUnsafe());
+      final byte[] authEncoded = out.encoded().toArrayUnsafe();
+      // [관측용 OBS#3] Auth RLP 본문 길이(설계상 ≈3.6KB). 2바이트 접두어를 더한 값이 on-wire 크기.
+      LOG.info("XW-OBS#3 firstMessage authBodyLength={}", authEncoded.length);
+      return frame(authEncoded);
     } catch (final RuntimeException e) {
       status.set(HandshakeStatus.FAILED);
       throw new HandshakeException("failed to build X-Wing Auth message", e);
@@ -174,15 +193,40 @@ public class XWingHandshaker implements Handshaker {
     if (status.get() != HandshakeStatus.IN_PROGRESS) {
       throw new IllegalStateException("handshake is not in progress");
     }
-    final byte[] raw = new byte[buf.readableBytes()];
-    buf.readBytes(raw);
+    // 이번 read 로 도착한 조각을 누적 버퍼에 이어붙인다(TCP 는 메시지 경계를 보존하지 않음).
+    final byte[] chunk = new byte[buf.readableBytes()];
+    buf.readBytes(chunk);
+    inboundReadCount++;
+    // [관측용 OBS#2] 이번 read 로 받은 조각 길이 / 지금까지 누적된 길이.
+    LOG.info(
+        "XW-OBS#2 handleMessage chunkLength={} buffered={} initiator={} responderStep={}",
+        chunk.length,
+        inbound.length + chunk.length,
+        initiator,
+        responderStep);
+    inbound = concat(inbound, chunk);
+
+    // 완전한 프레임(2바이트 길이 + 본문)이 아직 안 모였으면 empty → Besu 가 다음 조각을 기다린다.
+    final Optional<byte[]> body = nextCompleteFrame();
+    if (body.isEmpty()) {
+      return Optional.empty();
+    }
+    // [관측용 OBS#4] 완전한 패킷 복원 완료(fragmentation 재조립 성공 증거).
+    LOG.info(
+        "XW-OBS#4 assembled frame bodyLength={} reads={} initiator={} responderStep={}",
+        body.get().length,
+        inboundReadCount,
+        initiator,
+        responderStep);
+    inboundReadCount = 0;
+
     try {
       if (initiator) {
-        return handleAckAndBuildConf(raw);
+        return handleAckAndBuildConf(body.get());
       } else if (responderStep == 0) {
-        return Optional.of(handleAuthAndBuildAck(raw));
+        return Optional.of(handleAuthAndBuildAck(body.get()));
       } else {
-        handleConf(raw);
+        handleConf(body.get());
         return Optional.empty();
       }
     } catch (final HandshakeException e) {
@@ -192,6 +236,47 @@ public class XWingHandshaker implements Handshaker {
       status.set(HandshakeStatus.FAILED);
       throw new HandshakeException("X-Wing handshake message processing failed", e);
     }
+  }
+
+  /** 누적 버퍼에서 완전한 {@code [2B length][body]} 프레임 1개를 꺼낸다(남은 바이트는 보존). */
+  private Optional<byte[]> nextCompleteFrame() {
+    if (inbound.length < LENGTH_PREFIX_BYTES) {
+      return Optional.empty();
+    }
+    final int bodyLen = ((inbound[0] & 0xFF) << 8) | (inbound[1] & 0xFF);
+    final int frameLen = LENGTH_PREFIX_BYTES + bodyLen;
+    if (inbound.length < frameLen) {
+      return Optional.empty();
+    }
+    final byte[] body = Arrays.copyOfRange(inbound, LENGTH_PREFIX_BYTES, frameLen);
+    inbound = Arrays.copyOfRange(inbound, frameLen, inbound.length);
+    return Optional.of(body);
+  }
+
+  /** 본문 앞에 2바이트 big-endian 길이 접두어를 붙여 on-wire 프레임을 만든다(RLPx/EIP-8 관례). */
+  private static ByteBuf frame(final byte[] body) {
+    if (body.length > MAX_FRAME_BODY) {
+      throw new IllegalStateException(
+          "X-Wing handshake body too large for 2-byte length prefix: " + body.length);
+    }
+    final byte[] framed = new byte[LENGTH_PREFIX_BYTES + body.length];
+    framed[0] = (byte) ((body.length >>> 8) & 0xFF);
+    framed[1] = (byte) (body.length & 0xFF);
+    System.arraycopy(body, 0, framed, LENGTH_PREFIX_BYTES, body.length);
+    return Unpooled.wrappedBuffer(framed);
+  }
+
+  private static byte[] concat(final byte[] a, final byte[] b) {
+    if (a.length == 0) {
+      return b;
+    }
+    if (b.length == 0) {
+      return a;
+    }
+    final byte[] out = new byte[a.length + b.length];
+    System.arraycopy(a, 0, out, 0, a.length);
+    System.arraycopy(b, 0, out, a.length, b.length);
+    return out;
   }
 
   /** 응답자: Auth 수신 → K_R/K_I/K_E 도출 → ACK 생성. */
@@ -227,7 +312,7 @@ public class XWingHandshaker implements Handshaker {
     out.endList();
 
     this.responderStep = 1; // 이제 Conf 대기
-    return Unpooled.wrappedBuffer(out.encoded().toArrayUnsafe());
+    return frame(out.encoded().toArrayUnsafe());
   }
 
   /** 개시자: ACK 수신 → K_I/K_E 복호 → tag_R 검증 → Conf 생성 → SUCCESS. */
@@ -258,7 +343,7 @@ public class XWingHandshaker implements Handshaker {
     out.endList();
 
     status.set(HandshakeStatus.SUCCESS);
-    return Optional.of(Unpooled.wrappedBuffer(out.encoded().toArrayUnsafe()));
+    return Optional.of(frame(out.encoded().toArrayUnsafe()));
   }
 
   /** 응답자: Conf 수신 → tag_I 검증 → SUCCESS. */

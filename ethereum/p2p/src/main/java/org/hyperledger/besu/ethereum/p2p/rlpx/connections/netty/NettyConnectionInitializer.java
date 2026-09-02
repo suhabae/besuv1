@@ -29,6 +29,7 @@ import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakeSecrets;
 import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.Handshaker;
 import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakerProvider;
 import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies.ECIESHandshaker;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.xwing.XWingProvisioning;
 import org.hyperledger.besu.metrics.BesuMetricCategory;
 import org.hyperledger.besu.plugin.data.EnodeURL;
 import org.hyperledger.besu.plugin.services.MetricsSystem;
@@ -454,6 +455,9 @@ public class NettyConnectionInitializer
 
   @Override
   public Handshaker buildInstance() {
+    if (XWingProvisioning.enabled()) {
+      return XWingProvisioning.newHandshaker(nodeKey);
+    }
     return new ECIESHandshaker();
   }
 
