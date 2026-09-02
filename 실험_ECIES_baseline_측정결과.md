@@ -2,13 +2,14 @@
 
 > 목적: 현행 ECIES(secp256k1) 핸드셰이크와 X-Wing(ML-KEM-768+X25519) 핸드셰이크의 **메시지 크기·시간**을 동일 하네스로 공정 측정·비교.
 > 측정일: 2026-08-31~09-02 · 환경: Besu v26.9-develop, Windows x86_64, JDK 25(loom-ea)
+> ⚠️ 근거 범위: 아래 수치는 localhost 2노드·소표본(steady N=10~14)의 **예비(preliminary)** 값이다. 성능·안전성에 대한 단정이 아니라 관측 사실과 그 해석으로 읽어야 한다.
 
 ---
 
 ## 1. 측정 방법
 
 - **in-memory**: Besu `ethereum:p2p` 모듈 테스트. 워밍업 200 + 측정 2,000회, 장기키 1회 생성 후 재사용, 중앙값/p90/최소.
-  - **ECIES:** 실제 `ECIESHandshaker` 직접 호출. 크기는 on-wire(RLP EIP-8 + ECIES 오버헤드 포함).
+  - **ECIES:** 실제 `ECIESHandshaker` 직접 호출. 크기는 직렬화 핸드셰이크 바이트(RLP EIP-8 + ECIES 오버헤드 포함).
   - **X-Wing:** ML-KEM-768 + X25519 + SHA3-256/HmacSHA3-256로 Protocol 2 흐름 구현. JDK판 / BouncyCastle+RLP판 2종.
 - **라이브 TCP**(§3.5, §3.6): 실제 QBFT 2노드(127.0.0.1:30303↔30304)에서 Netty 파이프라인에 T0~T8 계측(`HandshakeTimings`)을 넣어 측정. `measure/ecies-tcp` 브랜치.
 
@@ -30,9 +31,11 @@ besu-native는 secp256k1을 Linux(.so)·macOS(.dylib)만 배포(Windows "TBD"). 
 | Auth / ACK / Conf | 538 / 373 / — B | 3,597 / 2,315 / 34 B | |
 | **총 크기** | **911 B** | **5,946 B** | **약 6.5배 ↑** |
 | 메시지 수 | 2 | 3 | |
-| **시간 중앙값** | **7,854 us** | **1,167.5 us** | **약 6.7배 ↓(빠름)** |
+| **처리 지연 중앙값** | **7,854 us** | **1,167.5 us** | **약 6.7배 ↓(빠름)** |
 
 (부속) X-Wing 구현별 시간: JDK판 1,917us / BC판 1,167.5us.
+
+> 해석 주의: 이 결과는 **본 구현·환경(Besu/JDK/BouncyCastle)의 in-memory 벤치마크(완전 워밍 2,000회)**에서 X-Wing 기반 핸드셰이커가 ECIESHandshaker보다 낮은 처리 지연을 보였다는 뜻이다. "PQ=연산부담 증가"를 일반적으로 반박한 것이 아니다.
 
 ### Tier-2 — 네이티브 (Linux/macOS 필요, 미측정)
 - ECIES: 네이티브 sign/verify + ECDH는 BC(부분 가속). X-Wing: 표준 스택에 네이티브 ML-KEM 없음(JDK/BC 순수자바가 현실 최선).
@@ -47,12 +50,12 @@ besu-native는 secp256k1을 Linux(.so)·macOS(.dylib)만 배포(Windows "TBD"). 
 |---|---|---|
 | TCP 연결 (T1-T0) | 7.2 | TCP 3-way + 채널 준비 |
 | Auth→Ack RTT (T5-T2) | 6.2 | Auth 송신→Ack 수신 |
-| **crypto (T6-T1)** | **7.84** | TCP후 HandshakeSecrets까지 |
+| **handshake→secrets (T6-T1)** | **7.84** | TCP 후 HandshakeSecrets까지(순수 암호 아님 — 네트워크 왕복·양측 계산 포함) |
 | peer 확립 (T8-T1) | 9.1 | +능력협상·연결등록 |
 | **전체 (T8-T0)** | **16.4** | connect→peer 완료 |
 
-### 정합성 검증
-라이브 TCP의 **crypto 구간 중앙값 7.84ms** = in-memory ECIES 벤치 **7.85ms** 와 거의 일치. → in-memory 암호처리 시간이 실제 TCP 노드에서도 재현됨(측정 신뢰성).
+### 관측 메모 (정합성 아님, 재현으로 해석)
+라이브 T6-T1(=handshake→secrets) 중앙값 7.84ms가 in-memory ECIES 벤치 7.85ms와 **근접하게 관측**되었다. 다만 T6-T1은 순수 암호 연산이 아니라 네트워크 왕복·I/O를 포함하므로, 이를 "두 측정 계층이 동일함을 증명"한 것으로 보면 안 되고 **유사하게 재현된 관측**으로 본다.
 
 > 주의: N=4 예비값. §3.6에서 X-Wing과 **동일 스크립트로 재측정**하여 갱신함.
 
@@ -60,8 +63,8 @@ besu-native는 secp256k1을 Linux(.so)·macOS(.dylib)만 배포(Windows "TBD"). 
 
 ### 3.6.1 X-Wing 라이브 연결을 막던 버그와 수정 (framing / fragmentation)
 - **증상**: X-Wing 활성화 시 두 노드가 붙지 않고 `net_peerCount=0x0`, 에러 로그도 없이 조용히 실패.
-- **원인(관측으로 확정)**: TCP는 메시지 경계를 보존하지 않는데, `XWingHandshaker.handleMessage`가 "1회 read = 1개 완전 메시지"로 가정. Netty 초기 수신버퍼(~2048B)보다 큰 Auth(3663B)/ACK(2315B)가 조각나 도착 → 잘린 조각을 RLP 파싱 → 예외 → `AbstractHandshakeHandler.exceptionCaught`가 TRACE로만 로깅 후 채널 종료.
-  - 관측 로그: 개시자 `authBodyLength=3663`, 응답자 첫 `chunkLength=2048` (2048 < 3663 → 조각화 확정).
+- **원인(관측으로 확정)**: TCP는 메시지 경계를 보존하지 않아 큰 메시지가 여러 번의 read로 나뉘어 도착할 수 있다(항상 2048B로 쪼개지는 것은 아님 — 1회에 다 오거나 다르게 나뉠 수도 있음). **본 실험에서는 3663B Auth가 첫 2048B + 후속 바이트로 나뉘어 도착하는 것이 관측**되었고, `XWingHandshaker.handleMessage`가 "1회 read = 1개 완전 메시지"로 가정해 잘린 조각을 RLP 파싱하다 예외 → `AbstractHandshakeHandler.exceptionCaught`가 TRACE로만 로깅 후 채널 종료.
+  - 관측 로그: 개시자 `authBodyLength=3663`, 응답자 첫 `chunkLength=2048`.
 - **수정(최소·계층분리)**: `XWingHandshaker.java` 한 파일 안에서만, 각 메시지(Auth/ACK/Conf) 앞에 **2바이트 big-endian 길이 접두어**(RLPx/EIP-8 관례)를 붙이고, 수신 측은 **누적 버퍼**로 길이만큼 다 모일 때까지 대기 후 파싱. 불완전하면 `Optional.empty()` 반환 → Besu 핸들러의 기존 "waiting for more bytes" 분기가 다음 조각을 대기. **Besu 핸들러/파이프라인/암호/키/주소록 무수정.**
 - **검증**: 단위테스트 3종(2048분할·개시자ACK분할·1바이트씩) 통과 + 라이브 로그 `XW-OBS#4 assembled bodyLength=3663 reads=2`(조각 재조립 성공) + `net_peerCount=0x1`.
 
@@ -76,33 +79,34 @@ besu-native는 secp256k1을 Linux(.so)·macOS(.dylib)만 배포(Windows "TBD"). 
 |---|---:|---:|---:|
 | TCP (T1-T0) | 9.65 / 14.89 | 4.09 / 6.72 | 0.42× |
 | Auth→ACK RTT (T5-T2) | 7.39 / 12.93 | 5.85 / 8.30 | 0.79× |
-| **crypto·secrets (T6-T1)** | **9.78 / 16.30** | **9.99 / 11.93** | **1.02×** |
+| **handshake→secrets (T6-T1)** | **9.78 / 16.30** | **9.99 / 11.93** | **1.02×** |
 | peer (T8-T1) | 10.93 / 20.56 | 10.74 / 12.94 | 0.98× |
 | **peerTotal (T8-T0)** | **19.63 / 41.65** | **14.87 / 25.01** | **0.76×** |
 
-on-wire 메시지 크기(라이브 관측): X-Wing Auth 3665B + ACK 2317B + Conf 36B ≈ **6.0KB (2B 길이접두어 포함)** vs ECIES 911B → **약 6.6배**, 메시지 2→3개.
+직렬화 핸드셰이크 바이트(application-layer, 라이브 관측): X-Wing Auth 3665B + ACK 2317B + Conf 36B ≈ **6.0KB (2B 길이접두어 포함)** vs ECIES 911B → **약 6.6배**, 메시지 2→3개. (진짜 on-wire 바이트/세그먼트 수는 pcap 측정이 필요하다.)
 
 ### 3.6.4 해석 (정직하게)
-1. **핵심 — 암호 핸드셰이크 지연은 사실상 동일**: crypto(T6-T1) 9.78 vs 9.99ms (1.02×). in-memory에선 X-Wing이 훨씬 빨랐으나(1.17 vs 7.85ms), 라이브 crypto 구간은 순수 KEM이 아니라 **네트워크 왕복 + 메시지 I/O가 지배**해 둘 다 ~10ms로 수렴. → "PQ 전환해도 실제 peer 핸드셰이크 지연은 ECIES와 대등(parity)".
-2. **peerTotal·TCP에서 X-Wing이 더 빠르게 보이는 건 노이즈**: TCP 셋업(T1-T0)은 핸드셰이크 암호와 무관한데 0.42×로 나온 것은 표본 규모(N=10~14)와 RPC 폴링 부하의 변동. **"X-Wing이 더 빠르다"고 주장하지 않는다** — parity로 해석.
-3. **진짜 PQC 비용은 대역폭·꼬리지연**: 메시지 6.6배·조각화는 median엔 거의 안 드러나고 p90/대역폭에서 드러남. 노드 수 적고 대역폭 여유 큰 금융 컨소시엄에 유리한 trade-off.
+1. **handshake→secrets 지연이 유사하게 관측**: T6-T1 9.78 vs 9.99ms (1.02×). 이는 **암호 연산이 동일**하다는 뜻이 아니라, 라이브 이 구간을 네트워크 왕복·메시지 I/O가 지배해 두 방식이 비슷하게 나온 것이다. in-memory의 연산 우위(§3)는 라이브에서 상쇄되어 둘 다 ~10ms로 수렴.
+2. **peerTotal·TCP에서 X-Wing이 더 빠르게 보이는 건 노이즈**: TCP 셋업(T1-T0)은 핸드셰이크 암호와 무관한데 0.42×로 나온 것은 표본 규모(N=10~14)와 RPC 폴링 부하의 변동. **"X-Wing이 더 빠르다"고 주장하지 않는다** — parity(대등)로 해석.
+3. **현재까지 확인된 PQC 비용: 메시지 크기(약 6.6배)와 flight 수(2→3)**. 꼬리지연(tail latency) 영향은 **미확정** — 오히려 이 소표본에서는 X-Wing p90이 더 낮은 구간도 있었다(peerTotal 25.0 vs 41.7). 대역폭·flight 비용이 지연에 드러나는지는 RTT 실험으로 검증해야 한다.
 4. **fragmentation 발견의 표현**: "PQC가 2KB 넘으면 무조건 실패"가 아니라, *handshake packet 경계를 TCP read 경계에 의존하던 기존 구현 전제가, PQC로 메시지가 커지며 드러난 stream reassembly 문제*.
 
-> 주의: 예비 수준(steady N=10~14, 변동 큼). 최종 논문은 (a) 표본 up(각 30+), (b) RPC 폴링 부하 없는 수집, (c) RTT 조건(0/10/30/50ms)에서 3-flight(Conf) 영향 측정 필요.
+> 주의: 예비 수준(steady N=10~14, 변동 큼, localhost). 최종 논문은 (a) 표본 up(각 30+), (b) RPC 폴링 부하 없는 수집, (c) RTT 조건(0/10/30/50ms)에서 3-flight(Conf) 영향 측정 필요. WAN/컨소시엄 수용성은 추후 검증 대상이다.
 
 ## 4. 해석 (논문용 핵심)
 
-1. **크기:** X-Wing이 on-wire 약 6.5~6.6배 큼(in-memory·라이브 동일 결론). 대역폭이 병목.
-2. **시간(in-memory):** 동일조건에서 X-Wing 암호가 ECIES보다 약 6.7배 빠름 → "PQ=연산부담 증가" 통념 반박.
-3. **시간(라이브 TCP):** 실제 peer 핸드셰이크 지연은 **ECIES와 대등**(crypto 1.02×). 라이브에선 네트워크·I/O가 지배해 in-memory의 연산 우위가 상쇄됨.
-4. **정합성:** ECIES 라이브 crypto ≈ in-memory. 측정 신뢰성 확보.
-5. **trade-off:** X-Wing 실비용은 연산이 아니라 대역폭·라운드(2→3). median 지연엔 비용이 안 드러나고 크기/꼬리지연에 드러남 → 금융 컨소시엄 유리.
+1. **크기:** X-Wing이 직렬화 기준 약 6.5~6.6배 큼(in-memory·라이브 동일 결론). 대역폭이 병목 후보.
+2. **시간(in-memory):** 본 구현·환경의 완전 워밍 조건에서 X-Wing 핸드셰이커 처리 지연이 ECIES보다 낮았음(약 6.7배). 일반화된 통념 반박이 아니라 본 조건의 결과.
+3. **시간(라이브 TCP):** handshake→secrets 지연이 **ECIES와 유사(1.02×)**. 라이브에선 네트워크·I/O가 지배해 in-memory의 연산 우위가 상쇄됨.
+4. **관측(정합성 아님):** ECIES 라이브 T6-T1 ≈ in-memory 처리 지연으로 근접 재현됨(증명 아님, 계층 신뢰성의 정성적 근거).
+5. **trade-off:** 확인된 X-Wing 비용은 대역폭·라운드(2→3). handshake→secrets median 지연에는 두드러지지 않음. 꼬리지연·WAN 영향은 미검증. 노드 적고 대역폭 여유 큰 금융 컨소시엄에 유리할 **가능성**이 있으나 localhost 예비 결과라 단정 불가.
 
 ## 5. 다음 단계
 - 라이브 표본 보강(각 30+), RPC 부하 없는 수집, RTT 조건 실험(3-flight 영향).
-- (선택) pcap으로 실제 TCP 세그먼트 수·wire bytes 측정.
+- (선택) pcap으로 실제 TCP 세그먼트 수·on-wire bytes 측정.
 - (선택) Tier-2 네이티브: Linux/macOS 재측정.
-- Phase B: framing 로직을 `XWingHandshaker`에서 분리해 독립 transport 계층(예: Netty length-frame decoder)으로 정리(최종 구현). wire 포맷 동일(2B length)이라 측정 재수집 불필요.
+- Phase B: framing 로직을 `XWingHandshaker`에서 분리해 독립 transport 계층으로 정리. wire 포맷(2B 길이)은 동일하나 메모리 복사·버퍼 관리·Netty 콜백 비용이 달라질 수 있어 **분리 후 기능·성능 regression 재측정 필요**.
+- 보안: 본 조합(AKE)의 mutual auth·FS·KCI/UKS·다운그레이드 저항은 미증명. 별도 형식 분석 필요.
 
 ## 6. 산출물 위치
 - crypto primitive: `crypto/algorithms/.../crypto/xwing/XWing.java` (+ test `XWingTest.java`)

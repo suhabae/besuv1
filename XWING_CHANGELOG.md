@@ -58,19 +58,19 @@
 - 신규 `XWing.KeyPair.privateKeyBundle()` / `keyPairFromPrivateBundle()` — 정적키 파일 저장/복원(수동 길이접두어 직렬화).
 
 **무엇 (framing 수정 — 라이브 실패의 진짜 원인)**
-- **증상**: X-Wing 켜면 `net_peerCount=0x0`, 조용히 실패. **원인**: `handleMessage`가 "1 read=1 완전 메시지" 가정. Auth(3663B)/ACK(2315B)가 Netty 초기 수신버퍼(~2048B)보다 커서 조각화 → 잘린 조각 RLP 파싱 → 예외 → TRACE로만 로깅 후 채널 종료. (관측: 개시자 `authBodyLength=3663`, 응답자 첫 `chunkLength=2048`.)
+- **증상**: X-Wing 켜면 `net_peerCount=0x0`, 조용히 실패. **원인**: `handleMessage`가 "1 read=1 완전 메시지" 가정. TCP는 메시지 경계를 보존하지 않아 큰 메시지가 여러 read로 나뉠 수 있고(항상 2048B는 아님), **본 실험에선 Auth 3663B가 첫 2048B + 후속으로 나뉘어 도착**하는 것이 관측됨 → 잘린 조각 RLP 파싱 → 예외 → TRACE로만 로깅 후 채널 종료. (관측: 개시자 `authBodyLength=3663`, 응답자 첫 `chunkLength=2048`.)
 - **수정 (계층분리·최소)**: `XWingHandshaker.java` 한 파일 안에서만 — 각 메시지에 **2바이트 BE 길이 접두어**(RLPx/EIP-8 관례) + 수신 **누적 버퍼**로 완전한 프레임이 모일 때까지 대기. 불완전 시 `Optional.empty()`→기존 핸들러 "waiting for more bytes" 활용. **Besu 핸들러/파이프라인/암호/키/주소록 무수정.** 헬퍼 `frame()/nextCompleteFrame()/concat()` 추가.
 - 수정 `AbstractHandshakeHandler` — 진단용 임시 로그 제거(T5/T6 계측만 유지, 원본에 근접).
 - 신규 테스트 3종(`XWingHandshakerTest`): Auth 2048분할, 개시자 ACK 분할, 1바이트씩 조각화 — 모두 재조립·완주 확인 ✅.
 
 **결과 (라이브 2노드, 2026-09-02)**
 - **X-Wing `net_peerCount=0x1`** — 실제 TCP에서 X-Wing 핸드셰이크로 연결 성공. `XW-OBS#4 assembled bodyLength=3663 reads=2`로 조각 재조립 실측.
-- **동일조건 비교(steady-state 중앙값, X-Wing N=14 / ECIES N=10, 동일 peerCount-검증 재연결 스크립트)**:
-  - crypto·secrets(T6-T1): ECIES 9.78 / X-Wing 9.99 ms → **1.02× (대등)**
+- **동일조건 비교(steady-state 중앙값, X-Wing N=14 / ECIES N=10, 동일 peerCount-검증 재연결 스크립트, localhost 예비)**:
+  - handshake→secrets(T6-T1): ECIES 9.78 / X-Wing 9.99 ms → **1.02×** (순수 암호 아님 — 네트워크 왕복·I/O 포함 구간)
   - peerTotal(T8-T0): ECIES 19.63 / X-Wing 14.87 ms
-  - on-wire 크기: ECIES 911B / X-Wing ~6.0KB (약 6.6배)
-- **해석**: 라이브 peer 핸드셰이크 지연은 ECIES와 **대등(parity)**. PQC 비용은 연산이 아니라 대역폭·꼬리지연(p90)·라운드(2→3)에 드러남. (peerTotal/TCP의 X-Wing 우세는 표본·부하 노이즈로, 우월 주장 안 함.)
+  - 직렬화 핸드셰이크 바이트(application-layer): ECIES 911B / X-Wing ~6.0KB (약 6.6배). 진짜 on-wire는 pcap 필요.
+- **해석(정직히)**: handshake→secrets 지연이 ECIES와 **유사(parity)** — '암호 연산 동일'이 아니라 라이브에선 네트워크·I/O가 이 구간을 지배해서다. peerTotal/TCP의 X-Wing 우세는 표본·부하 노이즈로 우월 주장 안 함. **확인된 PQC 비용은 크기(약 6.6배)+flight(2→3)**이며, **꼬리지연(tail latency) 영향은 미확정**(소표본에선 X-Wing p90이 더 낮은 구간도 있었음). in-memory 우위(약 6.7배)는 본 구현·환경 조건의 결과이지 일반화된 통념 반박이 아님. AKE 보안성(mutual auth·FS·KCI 등)은 미증명.
 
 **다음**
-- 표본 보강(각 30+), RPC 부하 없는 수집, RTT 조건(0/10/30/50ms) 실험(3-flight 영향).
-- Phase B: framing을 독립 transport 계층으로 분리(wire 포맷 2B length 동일 → 재측정 불필요).
+- 표본 보강(각 30+), RPC 부하 없는 수집, RTT 조건(0/10/30/50ms) 실험(3-flight 영향), WAN/컨소시엄 수용성 검증.
+- Phase B: framing을 독립 transport 계층으로 분리. wire 포맷(2B length)은 동일하나 메모리 복사·버퍼 관리·Netty 콜백 비용이 달라질 수 있어 **분리 후 기능·성능 regression 재측정 필요**.
