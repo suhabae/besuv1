@@ -56,7 +56,8 @@ public final class XWingProvisioning {
   public static final String ADDRBOOK_PROP = "besu.rlpx.xwing.addressBook";
 
   private static XWing.KeyPair localKey;
-  private static Map<Bytes, byte[]> addressBook;
+  private static Map<Bytes, byte[]> addressBook; // nodeId → X-Wing pk (개시자용)
+  private static Map<Bytes, Bytes> reverseAddressBook; // X-Wing pk → nodeId (응답자용)
 
   private XWingProvisioning() {}
 
@@ -70,8 +71,18 @@ public final class XWingProvisioning {
     if (localKey == null) {
       localKey = loadOrCreateLocalKey(nodeKey);
       addressBook = loadAddressBook();
+      reverseAddressBook = buildReverse(addressBook);
     }
-    return new XWingHandshaker(localKey, addressBook::get);
+    return new XWingHandshaker(localKey, addressBook::get, reverseAddressBook::get);
+  }
+
+  /** 주소록(nodeId→X-Wing pk)에서 역방향 맵(X-Wing pk→nodeId)을 만든다. 응답자 신원 역조회용. */
+  private static Map<Bytes, Bytes> buildReverse(final Map<Bytes, byte[]> forward) {
+    final Map<Bytes, Bytes> rev = new HashMap<>();
+    for (final Map.Entry<Bytes, byte[]> e : forward.entrySet()) {
+      rev.put(Bytes.wrap(e.getValue()), e.getKey());
+    }
+    return rev;
   }
 
   private static XWing.KeyPair loadOrCreateLocalKey(final NodeKey nodeKey) {

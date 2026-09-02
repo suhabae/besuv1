@@ -71,24 +71,26 @@ besu-native는 secp256k1을 Linux(.so)·macOS(.dylib)만 배포(Windows "TBD"). 
 ### 3.6.2 동일조건 재측정 방법 (ECIES·X-Wing 공통)
 - **재연결**: `admin_removePeer` → `net_peerCount==0` 확인 → `admin_addPeer` → `net_peerCount==1` 확인(폴링). blind sleep 아님 → 실제 해제/재연결 보장.
 - **규칙**: 콜드 스타트 1개 + 초기 워밍 5개 제외 → **steady-state** 구간에서 중앙값/p90.
-- 표본: X-Wing steady N=14, ECIES steady N=10. 개시자 JVM(Node-2, port 8546)에서 T0~T8.
+- 표본: X-Wing은 Phase 2-F 빌드(secp 제거·역조회 신원바인딩)에서 재측정 steady N=9. ECIES는 경로 무변경이라 이전 측정 steady N=10 유지. 개시자 JVM(Node-2, port 8546)에서 T0~T8.
 
 ### 3.6.3 결과 — steady-state 중앙값 / p90 (ms)
 
-| 구간 | ECIES (N=10) | X-Wing (N=14) | 비율(중앙값) |
+| 구간 | ECIES (N=10) | X-Wing / Phase 2-F (N=9) | 비율(중앙값) |
 |---|---:|---:|---:|
-| TCP (T1-T0) | 9.65 / 14.89 | 4.09 / 6.72 | 0.42× |
-| Auth→ACK RTT (T5-T2) | 7.39 / 12.93 | 5.85 / 8.30 | 0.79× |
-| **handshake→secrets (T6-T1)** | **9.78 / 16.30** | **9.99 / 11.93** | **1.02×** |
-| peer (T8-T1) | 10.93 / 20.56 | 10.74 / 12.94 | 0.98× |
-| **peerTotal (T8-T0)** | **19.63 / 41.65** | **14.87 / 25.01** | **0.76×** |
+| TCP (T1-T0) | 9.65 / 14.89 | 3.76 / 9.33 | 0.39× |
+| Auth→ACK RTT (T5-T2) | 7.39 / 12.93 | 4.50 / 12.01 | 0.61× |
+| **handshake→secrets (T6-T1)** | **9.78 / 16.30** | **8.00 / 16.60** | **0.82×** |
+| peer (T8-T1) | 10.93 / 20.56 | 8.62 / 17.62 | 0.79× |
+| **peerTotal (T8-T0)** | **19.63 / 41.65** | **12.39 / 26.50** | **0.63×** |
+
+> 재측정 메모: X-Wing handshake→secrets는 이전 빌드(secp 포함) 9.99ms → Phase 2-F 8.00ms로, **런-간 변동 범위 내 동일**(secp 64B 제거로 유의미한 차이 발생 불가). 즉 secp 제거·역조회 도입은 성능을 바꾸지 않았다. ECIES(N=10)와 X-Wing(N=9)은 서로 다른 측정 세션이라 완전한 매칭 페어는 아니며(경로는 무변경), 최종 확정은 동일 세션 대량 표본 재수집이 필요하다.
 
 직렬화 핸드셰이크 바이트(application-layer, 라이브 관측): X-Wing Auth 3665B + ACK 2317B + Conf 36B ≈ **6.0KB (2B 길이접두어 포함)** vs ECIES 911B → **약 6.6배**, 메시지 2→3개. (진짜 on-wire 바이트/세그먼트 수는 pcap 측정이 필요하다.)
 
 ### 3.6.4 해석 (정직하게)
-1. **handshake→secrets 지연이 유사하게 관측**: T6-T1 9.78 vs 9.99ms (1.02×). 이는 **암호 연산이 동일**하다는 뜻이 아니라, 라이브 이 구간을 네트워크 왕복·메시지 I/O가 지배해 두 방식이 비슷하게 나온 것이다. in-memory의 연산 우위(§3)는 라이브에서 상쇄되어 둘 다 ~10ms로 수렴.
-2. **peerTotal·TCP에서 X-Wing이 더 빠르게 보이는 건 노이즈**: TCP 셋업(T1-T0)은 핸드셰이크 암호와 무관한데 0.42×로 나온 것은 표본 규모(N=10~14)와 RPC 폴링 부하의 변동. **"X-Wing이 더 빠르다"고 주장하지 않는다** — parity(대등)로 해석.
-3. **현재까지 확인된 PQC 비용: 메시지 크기(약 6.6배)와 flight 수(2→3)**. 꼬리지연(tail latency) 영향은 **미확정** — 오히려 이 소표본에서는 X-Wing p90이 더 낮은 구간도 있었다(peerTotal 25.0 vs 41.7). 대역폭·flight 비용이 지연에 드러나는지는 RTT 실험으로 검증해야 한다.
+1. **handshake→secrets 지연이 같은 자릿수로 관측**: T6-T1 ECIES 9.78 vs X-Wing 8.00ms (Phase 2-F). 이는 **암호 연산이 동일/우월**하다는 뜻이 아니라, 라이브 이 구간을 네트워크 왕복·메시지 I/O가 지배해 두 방식이 비슷한 대(~8~10ms)로 관측된 것이다(소표본 변동 큼 — 이전 X-Wing 빌드는 9.99ms였고 런-간 변동 범위 내). in-memory의 연산 우위(§3)는 라이브에서 상쇄됨.
+2. **peerTotal·TCP에서 X-Wing이 더 빠르게 보이는 건 노이즈**: TCP 셋업(T1-T0)은 핸드셰이크 암호와 무관한데 0.39×로 나온 것은 소표본(N=9~10)과 RPC 폴링 부하의 변동. **"X-Wing이 더 빠르다"고 주장하지 않는다** — parity(대등)로 해석.
+3. **현재까지 확인된 PQC 비용: 메시지 크기(약 6.6배)와 flight 수(2→3)**. 꼬리지연(tail latency) 영향은 **미확정** — 이 소표본에서는 X-Wing p90이 더 낮은 구간도 있었다(peerTotal p90 26.5 vs 41.7). 대역폭·flight 비용이 지연에 드러나는지는 RTT 실험으로 검증해야 한다.
 4. **fragmentation 발견의 표현**: "PQC가 2KB 넘으면 무조건 실패"가 아니라, *handshake packet 경계를 TCP read 경계에 의존하던 기존 구현 전제가, PQC로 메시지가 커지며 드러난 stream reassembly 문제*.
 
 > 주의: 예비 수준(steady N=10~14, 변동 큼, localhost). 최종 논문은 (a) 표본 up(각 30+), (b) RPC 폴링 부하 없는 수집, (c) RTT 조건(0/10/30/50ms)에서 3-flight(Conf) 영향 측정 필요. WAN/컨소시엄 수용성은 추후 검증 대상이다.
@@ -97,7 +99,7 @@ besu-native는 secp256k1을 Linux(.so)·macOS(.dylib)만 배포(Windows "TBD"). 
 
 1. **크기:** X-Wing이 직렬화 기준 약 6.5~6.6배 큼(in-memory·라이브 동일 결론). 대역폭이 병목 후보.
 2. **시간(in-memory):** 본 구현·환경의 완전 워밍 조건에서 X-Wing 핸드셰이커 처리 지연이 ECIES보다 낮았음(약 6.7배). 일반화된 통념 반박이 아니라 본 조건의 결과.
-3. **시간(라이브 TCP):** handshake→secrets 지연이 **ECIES와 유사(1.02×)**. 라이브에선 네트워크·I/O가 지배해 in-memory의 연산 우위가 상쇄됨.
+3. **시간(라이브 TCP):** handshake→secrets 지연이 **ECIES와 같은 자릿수(중앙값 0.82×, 런-간 변동 큼)**. 라이브에선 네트워크·I/O가 지배해 in-memory의 연산 우위가 상쇄됨.
 4. **관측(정합성 아님):** ECIES 라이브 T6-T1 ≈ in-memory 처리 지연으로 근접 재현됨(증명 아님, 계층 신뢰성의 정성적 근거).
 5. **trade-off:** 확인된 X-Wing 비용은 대역폭·라운드(2→3). handshake→secrets median 지연에는 두드러지지 않음. 꼬리지연·WAN 영향은 미검증. 노드 적고 대역폭 여유 큰 금융 컨소시엄에 유리할 **가능성**이 있으나 localhost 예비 결과라 단정 불가.
 

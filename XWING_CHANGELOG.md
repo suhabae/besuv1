@@ -74,3 +74,21 @@
 **다음**
 - 표본 보강(각 30+), RPC 부하 없는 수집, RTT 조건(0/10/30/50ms) 실험(3-flight 영향), WAN/컨소시엄 수용성 검증.
 - Phase B: framing을 독립 transport 계층으로 분리. wire 포맷(2B length)은 동일하나 메모리 복사·버퍼 관리·Netty 콜백 비용이 달라질 수 있어 **분리 후 기능·성능 regression 재측정 필요**.
+
+---
+
+## [measure/ecies-tcp] Phase 2-F: Auth에서 secp nodeId 제거 + 주소록 역조회 신원 바인딩
+
+**무엇**
+- **Auth 메시지에서 secp nodeId(64B) 제거.** `Auth = [XWpk_I, XWpk_eph, CT_R, n_I]` (기존: 맨 앞에 `secp_I(64)` 있었음).
+- 응답자는 Auth의 개시자 X-Wing 공개키(`XWpk_I`)를 **역주소록(X-Wing pk → nodeId)으로 역조회**해 개시자 신원(nodeId)을 확정. 주소록에 없는 키면 **거절**.
+- `XWingHandshaker` 생성자에 역조회 함수 파라미터 추가. `XWingProvisioning`이 주소록 로드 시 정방향·역방향 맵을 함께 구성해 전달. 미사용이 된 `nodeKey` 필드 제거.
+- 테스트: 모든 생성자 3-인자로 갱신 + **`unregisteredInitiatorRejectedAtAuth`**(미등록 개시자 거절) 추가. 총 6개 통과.
+
+**왜**
+- 신원(nodeId)이 이미 컨소시엄 주소록에 있으므로 secp nodeId를 전선에 다시 실을 필요가 없음(중복 제거).
+- 더 중요: 응답자가 `XWpk_I`를 그냥 신뢰하던 기존 방식의 약점을 없앰 → **주소록에 등록된 멤버의 X-Wing 키만 통과**하므로 신원이 KEM 인증(개시자가 `XWpk_I` 개인키 보유 증명)과 결합되어 바인딩 성립. Phase 4로 미뤘던 신원 바인딩을 자연스럽게 당겨옴.
+
+**결과**: Auth 소폭 감소(secp 64B + RLP 오버헤드). 실제 2노드 X-Wing 연결 `net_peerCount=0x1` 재확인. 단위테스트 6/6 통과.
+
+**주의**: wire 포맷 변경(Auth 필드 구성) → 두 노드 모두 이 빌드여야 함. 주소록 파일 형식(`nodeId=xwingpub`)은 불변이라 기존 키·주소록 그대로 사용. **Besu 원본 무수정**(우리 파일 2개 + 테스트만).

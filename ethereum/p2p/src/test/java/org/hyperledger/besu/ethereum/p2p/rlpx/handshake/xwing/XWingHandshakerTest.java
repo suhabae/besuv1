@@ -48,8 +48,8 @@ class XWingHandshakerTest {
     book.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
     book.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
 
-    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get);
-    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get);
+    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get, reverse(book)::get);
+    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get, reverse(book)::get);
 
     initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
     responder.prepareResponder(respNodeKey);
@@ -84,10 +84,14 @@ class XWingHandshakerTest {
     // 개시자 주소록에 응답자의 "틀린" X-Wing 공개키를 넣음 → K_R 불일치 → tag 검증 실패해야 함
     final Map<Bytes, byte[]> initBook = new HashMap<>();
     initBook.put(respNodeKey.getPublicKey().getEncodedBytes(), wrongXW.encodedPublicKey());
+    // 응답자는 개시자를 (올바른) 역주소록으로 식별할 수 있어야 tag 검증 단계까지 도달한다.
     final Map<Bytes, byte[]> respBook = new HashMap<>();
+    respBook.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
 
-    final XWingHandshaker initiator = new XWingHandshaker(initXW, initBook::get);
-    final XWingHandshaker responder = new XWingHandshaker(respXW, respBook::get);
+    final XWingHandshaker initiator =
+        new XWingHandshaker(initXW, initBook::get, reverse(initBook)::get);
+    final XWingHandshaker responder =
+        new XWingHandshaker(respXW, respBook::get, reverse(respBook)::get);
 
     initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
     responder.prepareResponder(respNodeKey);
@@ -118,8 +122,8 @@ class XWingHandshakerTest {
     book.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
     book.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
 
-    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get);
-    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get);
+    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get, reverse(book)::get);
+    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get, reverse(book)::get);
     initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
     responder.prepareResponder(respNodeKey);
 
@@ -145,8 +149,8 @@ class XWingHandshakerTest {
     book.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
     book.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
 
-    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get);
-    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get);
+    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get, reverse(book)::get);
+    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get, reverse(book)::get);
     initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
     responder.prepareResponder(respNodeKey);
 
@@ -172,8 +176,8 @@ class XWingHandshakerTest {
     book.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
     book.put(initNodeKey.getPublicKey().getEncodedBytes(), initXW.encodedPublicKey());
 
-    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get);
-    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get);
+    final XWingHandshaker initiator = new XWingHandshaker(initXW, book::get, reverse(book)::get);
+    final XWingHandshaker responder = new XWingHandshaker(respXW, book::get, reverse(book)::get);
     initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
     responder.prepareResponder(respNodeKey);
 
@@ -185,6 +189,35 @@ class XWingHandshakerTest {
     assertThat(initiator.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
     assertThat(responder.getStatus()).isEqualTo(Handshaker.HandshakeStatus.SUCCESS);
     assertThat(initiator.secrets().equals(responder.secrets(), true)).isTrue();
+  }
+
+  /** [신원 바인딩] 응답자 주소록에 없는 X-Wing 키를 제시한 개시자는 Auth 처리 단계에서 거절된다. */
+  @Test
+  void unregisteredInitiatorRejectedAtAuth() throws Exception {
+    final NodeKey initNodeKey = NodeKeyUtils.generate();
+    final NodeKey respNodeKey = NodeKeyUtils.generate();
+    final XWing.KeyPair initXW = XWing.generateKeyPair();
+    final XWing.KeyPair respXW = XWing.generateKeyPair();
+
+    // 개시자는 응답자 키를 알지만, 응답자 주소록엔 개시자 항목이 없음(미등록).
+    final Map<Bytes, byte[]> initBook = new HashMap<>();
+    initBook.put(respNodeKey.getPublicKey().getEncodedBytes(), respXW.encodedPublicKey());
+    final Map<Bytes, byte[]> respBook = new HashMap<>(); // 개시자 미등록
+
+    final XWingHandshaker initiator =
+        new XWingHandshaker(initXW, initBook::get, reverse(initBook)::get);
+    final XWingHandshaker responder =
+        new XWingHandshaker(respXW, respBook::get, reverse(respBook)::get);
+    initiator.prepareInitiator(initNodeKey, respNodeKey.getPublicKey());
+    responder.prepareResponder(respNodeKey);
+
+    final ByteBuf auth = initiator.firstMessage();
+    try {
+      responder.handleMessage(auth); // 미등록 X-Wing 키 → 역조회 실패 → 거절
+    } catch (final Exception expected) {
+      // ok
+    }
+    assertThat(responder.getStatus()).isEqualTo(Handshaker.HandshakeStatus.FAILED);
   }
 
   /** framed 바이트열을 chunkSize 바이트씩 쪼개 handleMessage 에 흘려넣고, 나온 응답(있으면)을 반환. */
@@ -200,6 +233,15 @@ class XWingHandshakerTest {
       }
     }
     return response;
+  }
+
+  /** 주소록(nodeId→X-Wing pk)에서 역방향 맵(X-Wing pk→nodeId)을 만든다. 응답자 신원 역조회용. */
+  private static Map<Bytes, Bytes> reverse(final Map<Bytes, byte[]> book) {
+    final Map<Bytes, Bytes> rev = new HashMap<>();
+    for (final Map.Entry<Bytes, byte[]> e : book.entrySet()) {
+      rev.put(Bytes.wrap(e.getValue()), e.getKey());
+    }
+    return rev;
   }
 
   private static byte[] toBytes(final ByteBuf buf) {

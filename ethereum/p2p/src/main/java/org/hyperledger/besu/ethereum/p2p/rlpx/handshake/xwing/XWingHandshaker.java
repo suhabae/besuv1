@@ -54,7 +54,7 @@ import org.slf4j.LoggerFactory;
  * <p>메시지 흐름 (개시자 I ↔ 응답자 R):
  *
  * <pre>
- *   Auth (I→R) = [ secp_I(64) , XWpk_I(1216) , XWpk_eph(1216) , CT_R(1120) , n_I(32) ]
+ *   Auth (I→R) = [ XWpk_I(1216) , XWpk_eph(1216) , CT_R(1120) , n_I(32) ]
  *   ACK  (R→I) = [ CT_I(1120) , CT_E(1120) , tag_R(32) , n_R(32) ]
  *   Conf (I→R) = [ tag_I(32) ]
  * </pre>
@@ -62,9 +62,11 @@ import org.slf4j.LoggerFactory;
  * <p>키 재료: K_R=Encap(XWpk_R)(응답자 인증), K_I=Encap(XWpk_I)(개시자 인증),
  * K_E=Encap(XWpk_eph)(전방향 비밀성). K_eph = Keccak256(K_I ‖ K_R ‖ K_E).
  *
- * <p>신원 모델(컨소시엄 PDK): 노드 신원은 기존 secp256k1 유지. 개시자는 상대(응답자)의 X-Wing 정적
- * 공개키를 nodeId→X-Wing pk 주소록({@code peerStaticXWingByNodeId})에서 조회한다. 응답자는 개시자의
- * X-Wing 정적 공개키를 Auth에서 받는다(주소록과의 일치 검증=신원 바인딩은 Phase 4 하드닝).
+ * <p>신원 모델(컨소시엄 PDK): 노드 신원은 기존 secp256k1(nodeId) 유지. 개시자는 상대(응답자)의 X-Wing
+ * 정적 공개키를 nodeId→X-Wing pk 주소록({@code peerStaticXWingByNodeId})에서 조회한다. 응답자는 Auth의
+ * 개시자 X-Wing 공개키를 X-Wing pk→nodeId 역주소록({@code nodeIdByPeerStaticXWing})으로 역조회해
+ * 개시자 신원(nodeId)을 확정한다. 주소록에 없는 키면 거절 → 신원 바인딩이 성립하므로 Auth에 secp
+ * nodeId를 별도로 실을 필요가 없다(등록된 멤버만 통과).
  *
  * <p>참고: KDF/MAC은 이더리움 스택에 맞춰 Keccak-256 사용. combiner(SHA3-256)는 {@link XWing}
  * primitive 내부 규정을 따른다.
@@ -99,12 +101,12 @@ public class XWingHandshaker implements Handshaker {
       new AtomicReference<>(HandshakeStatus.UNINITIALIZED);
   private final SignatureAlgorithm signatureAlgorithm = SignatureAlgorithmFactory.getInstance();
 
-  // 우리 정적 X-Wing 키 + (nodeId→상대 X-Wing pk) 주소록
+  // 우리 정적 X-Wing 키 + 주소록(양방향)
   private final XWing.KeyPair localStatic;
-  private final Function<Bytes, byte[]> peerStaticXWingByNodeId;
+  private final Function<Bytes, byte[]> peerStaticXWingByNodeId; // nodeId → 상대 X-Wing pk (개시자용)
+  private final Function<Bytes, Bytes> nodeIdByPeerStaticXWing; // 상대 X-Wing pk → nodeId (응답자용)
 
   private boolean initiator;
-  private NodeKey nodeKey; // 우리 secp 신원
   private SECPPublicKey partyPubKey; // 상대 secp 신원
 
   // 개시자 전용
@@ -123,11 +125,17 @@ public class XWingHandshaker implements Handshaker {
    * @param localStatic 우리 노드의 X-Wing 정적 키쌍
    * @param peerStaticXWingByNodeId secp nodeId(64B 인코딩)→상대 X-Wing 정적 공개키(1216B) 조회 함수
    *     (컨소시엄 PDK 주소록). 개시자가 응답자 공개키를 얻는 데 사용.
+   * @param nodeIdByPeerStaticXWing 상대 X-Wing 정적 공개키(1216B)→secp nodeId(64B) 역조회 함수.
+   *     응답자가 Auth의 X-Wing 공개키로 개시자의 신원(nodeId)을 확정하는 데 사용. 없으면(주소록 미등록)
+   *     null 반환 → 응답자는 연결을 거절한다(신원 바인딩). 이로써 Auth에 secp nodeId를 실을 필요가 없다.
    */
   public XWingHandshaker(
-      final XWing.KeyPair localStatic, final Function<Bytes, byte[]> peerStaticXWingByNodeId) {
+      final XWing.KeyPair localStatic,
+      final Function<Bytes, byte[]> peerStaticXWingByNodeId,
+      final Function<Bytes, Bytes> nodeIdByPeerStaticXWing) {
     this.localStatic = localStatic;
     this.peerStaticXWingByNodeId = peerStaticXWingByNodeId;
+    this.nodeIdByPeerStaticXWing = nodeIdByPeerStaticXWing;
   }
 
   @Override
@@ -136,7 +144,6 @@ public class XWingHandshaker implements Handshaker {
       throw new IllegalStateException("handshake was already prepared");
     }
     this.initiator = true;
-    this.nodeKey = nodeKey;
     this.partyPubKey = theirPubKey;
     this.peerStaticXWingPub = peerStaticXWingByNodeId.apply(theirPubKey.getEncodedBytes());
     if (this.peerStaticXWingPub == null) {
@@ -153,7 +160,6 @@ public class XWingHandshaker implements Handshaker {
       throw new IllegalStateException("handshake was already prepared");
     }
     this.initiator = false;
-    this.nodeKey = nodeKey;
     this.nR = random(NONCE_BYTES);
     this.responderStep = 0;
   }
@@ -172,8 +178,7 @@ public class XWingHandshaker implements Handshaker {
 
       final BytesValueRLPOutput out = new BytesValueRLPOutput();
       out.startList();
-      out.writeBytes(nodeKey.getPublicKey().getEncodedBytes()); // secp_I (신원)
-      out.writeBytes(Bytes.wrap(localStatic.encodedPublicKey())); // XWpk_I
+      out.writeBytes(Bytes.wrap(localStatic.encodedPublicKey())); // XWpk_I (신원은 이 키로 역조회)
       out.writeBytes(Bytes.wrap(eph.encodedPublicKey())); // XWpk_eph
       out.writeBytes(Bytes.wrap(encR.ciphertext())); // CT_R
       out.writeBytes(Bytes.wrap(nI)); // n_I
@@ -283,17 +288,19 @@ public class XWingHandshaker implements Handshaker {
   private ByteBuf handleAuthAndBuildAck(final byte[] authBytes) throws HandshakeException {
     final RLPInput in = RLP.input(Bytes.wrap(authBytes));
     in.enterList();
-    final byte[] secpI = in.readBytes().toArrayUnsafe();
     final byte[] xwPkI = in.readBytes().toArrayUnsafe();
     final byte[] xwPkEph = in.readBytes().toArrayUnsafe();
     final byte[] ctRIn = in.readBytes().toArrayUnsafe();
     this.nI = in.readBytes().toArrayUnsafe();
     in.leaveList();
 
-    if (secpI.length != SECP_PUBKEY_BYTES) {
-      throw new HandshakeException("bad initiator secp key length");
+    // 신원 확정(바인딩): 개시자 X-Wing 공개키로 주소록을 역조회해 secp nodeId를 얻는다.
+    // 주소록에 없는(미등록) 키면 거절한다.
+    final Bytes peerNodeId = nodeIdByPeerStaticXWing.apply(Bytes.wrap(xwPkI));
+    if (peerNodeId == null || peerNodeId.size() != SECP_PUBKEY_BYTES) {
+      throw new HandshakeException("initiator X-Wing key not found in address book");
     }
-    this.partyPubKey = signatureAlgorithm.createPublicKey(Bytes.wrap(secpI));
+    this.partyPubKey = signatureAlgorithm.createPublicKey(peerNodeId);
 
     this.kR = XWing.decapsulate(ctRIn, localStatic); // == 개시자의 encR.ss
     final XWing.Encapsulation encI = XWing.encapsulate(xwPkI); // K_I, CT_I
