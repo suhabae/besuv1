@@ -92,3 +92,23 @@
 **결과**: Auth 소폭 감소(secp 64B + RLP 오버헤드). 실제 2노드 X-Wing 연결 `net_peerCount=0x1` 재확인. 단위테스트 6/6 통과.
 
 **주의**: wire 포맷 변경(Auth 필드 구성) → 두 노드 모두 이 빌드여야 함. 주소록 파일 형식(`nodeId=xwingpub`)은 불변이라 기존 키·주소록 그대로 사용. **Besu 원본 무수정**(우리 파일 2개 + 테스트만).
+
+---
+
+## [measure/ecies-tcp] Phase 3: 통제 네트워크(WSL netns+netem) 반복측정 + 계측 구간 정밀화
+
+**무엇 (측정 하네스 — 프로덕션 로직 무영향)**
+- **반복 재연결 30초 벽 해결**: `RlpxAgent.peersConnectingCache`(`expireAfterWrite(30s)`, "we will at most try to connect every 30 seconds")가 `admin_removePeer`→`admin_addPeer` 반복측정을 30초에 1회로 제한하고, `disconnect()`가 이 캐시를 무효화하지 않아 재연결이 30초씩 지연됨. → **측정 모드(`-Dbesu.rlpx.measurement=true`)에서만** `disconnect()` 시 `peersConnectingCache.invalidate(peerId)` 추가. 평상시 30초 throttle 그대로 유지. ECIES/X-Wing 공통 경로.
+- 런치 플래그(소스 아님) `--Xp2p-check-maintained-connections-frequency=2`: 즉시연결 경합 시 재시도 안전망(양쪽 프로토콜 동일 적용).
+
+**무엇 (계측 구간 정밀화 — nanoTime 기록만 추가)**
+- `setup(T1-T0)`가 순수 TCP가 아님을 확인(생성자에서 `firstMessage()` 실행 후 `channelActive`). → **직접 분리 계측**: `HandshakeHandlerOutbound`에서 `firstMessage` 앞뒤 `Ta/Tb` 기록 → `prep(Tb-Ta)`=개시자 first-message 암호, `pureTCP(T1-Tb)`=실제 TCP.
+- **`keyReady(T6a-T1)` 추가**: `AbstractHandshakeHandler`에서 `nextHandshakeMessage` 직후 `status==SUCCESS`가 되는 순간(=개시자가 세션키 도출 + 상대 `tag_R` 인증)을 프로토콜 무관하게 1회 기록. 기존 `crypto(T6-T1)`은 X-Wing이 이때 Conf를 반환하는 탓에 T6가 응답자 Hello 수신까지 밀려 **프로토콜 간 의미가 달랐음** → `keyReady`로 교정(양쪽 ≈1×RTT 기대).
+- `XWingHandshaker`의 관측용 OBS 로그 `info`→`debug` (X-Wing 측정 편향·로그노이즈 제거).
+- `parse-timing.sh` 갱신: `prep/pureTCP/keyReady` 파싱·요약.
+
+**하네스 스크립트 (신규, `netns/`)**: `setup-netns.sh`(ns1↔veth↔ns2 + netem delay/rate), `run-node.sh`(netns 내 besu 실행), `measure-collect.sh`(실 handshake N개 보장 수집, hsFail 구분), `parse-timing.sh`(구간별 통계+CSV), `sweep.sh`(RTT 0/10/30/50 스윕).
+
+**계측 원칙 (논문 정합)**: 개시자 단일 JVM 시계 구간차만 사용, 서로 다른 JVM timestamp 직접 차감 금지(cf. Paquin–Stebila–Tamvada 2020; KEMTLS 2020, netns+netem·개시자측 end-to-end). 응답자측 명시적 키확인(`tag_I` 검증) 완료 계측은 응답자 자기 시계로 별도 추가 예정.
+
+**주의**: 위 계측/측정모드는 `System.nanoTime()` 기록과 측정모드 캐시무효화뿐, RLPx/암호/키/주소록/TCP 동작은 불변.

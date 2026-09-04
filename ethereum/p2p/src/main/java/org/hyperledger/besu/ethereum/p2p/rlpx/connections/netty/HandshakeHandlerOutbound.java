@@ -41,6 +41,8 @@ final class HandshakeHandlerOutbound extends AbstractHandshakeHandler {
   private static final Logger LOG = LoggerFactory.getLogger(HandshakeHandlerOutbound.class);
 
   private final ByteBuf first;
+  private final long tPrepStart; // 개시자 firstMessage 생성 직전
+  private final long tPrepEnd;   // 개시자 firstMessage 생성 직후
 
   public HandshakeHandlerOutbound(
       final NodeKey nodeKey,
@@ -66,9 +68,11 @@ final class HandshakeHandlerOutbound extends AbstractHandshakeHandler {
         false,
         peerLookup,
         maxMessageSize);
+    this.tPrepStart = System.nanoTime();
     handshaker.prepareInitiator(
         nodeKey, SignatureAlgorithmFactory.getInstance().createPublicKey(peer.getId()));
     this.first = handshaker.firstMessage();
+    this.tPrepEnd = System.nanoTime();
   }
 
   @Override
@@ -88,6 +92,8 @@ final class HandshakeHandlerOutbound extends AbstractHandshakeHandler {
     // [측정용] T1: TCP 연결됨(channelActive)
     final HandshakeTimings timings = ctx.channel().attr(HandshakeTimings.KEY).get();
     if (timings != null) {
+      timings.tPrepStart = this.tPrepStart;
+      timings.tPrepEnd = this.tPrepEnd;
       timings.t1ChannelActive = System.nanoTime();
     }
     ctx.writeAndFlush(first)

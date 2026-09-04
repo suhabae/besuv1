@@ -248,6 +248,12 @@ public class RlpxAgent {
           peerConnectionCompletableFuture.get().disconnect(reason);
         }
       }
+      // [측정 전용] benchmark 모드(-Dbesu.rlpx.measurement=true)에서만
+      // disconnect 직후 connect 캐시를 무효화해 즉시 재연결을 허용한다.
+      // 일반 Besu 동작(30초 재연결 throttle)은 그대로 유지. 프로토콜 무관(ECIES/X-Wing 공통).
+      if (Boolean.getBoolean("besu.rlpx.measurement")) {
+        peersConnectingCache.invalidate(peerId);
+      }
     } catch (final Exception e) {
       throw new RuntimeException(e);
     }

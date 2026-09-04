@@ -39,8 +39,11 @@ final class HandshakeTimings {
   long t2AuthSent; // Auth 전송 완료
   long t5AckReceived; // Ack 수신(개시자 첫 inbound)
   long t6SecretsReady; // HandshakeSecrets 생성(SUCCESS)
+  long t6aKeyReady; // [측정] 개시자 SUCCESS 도달(=세션키 도출+상대 인증) 진짜 key-ready
   long t7HelloAuthenticated; // 상대 Hello 복호·nodeId 검증 통과
   long t8PeerEstablished; // peer 확립(connectFuture 완료)
+  long tPrepStart; // [측정] 개시자 firstMessage 생성 직전 (Ta)
+  long tPrepEnd;   // [측정] 개시자 firstMessage 생성 직후 (Tb)
 
   /** 개시자 JVM 내부 구간 차이(마이크로초). 아직 안 찍힌 구간은 -1. */
   String summaryMicros() {
@@ -49,6 +52,8 @@ final class HandshakeTimings {
         + us(t0ConnectStart, t1ChannelActive)
         + " AuthAckRTT(T5-T2)="
         + us(t2AuthSent, t5AckReceived)
+        + " keyReady(T6a-T1)="
+        + us(t1ChannelActive, t6aKeyReady)
         + " crypto(T6-T1)="
         + us(t1ChannelActive, t6SecretsReady)
         + " helloAuth(T7-T1)="
@@ -56,7 +61,11 @@ final class HandshakeTimings {
         + " peer(T8-T1)="
         + us(t1ChannelActive, t8PeerEstablished)
         + " peerTotal(T8-T0)="
-        + us(t0ConnectStart, t8PeerEstablished);
+        + us(t0ConnectStart, t8PeerEstablished)
+        + " prep(Tb-Ta)="
+        + us(tPrepStart, tPrepEnd)
+        + " pureTCP(T1-Tb)="
+        + us(tPrepEnd, t1ChannelActive);
   }
 
   private static String us(final long start, final long end) {

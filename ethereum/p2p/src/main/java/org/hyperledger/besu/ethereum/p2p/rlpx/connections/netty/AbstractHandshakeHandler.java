@@ -105,6 +105,13 @@ abstract class AbstractHandshakeHandler extends SimpleChannelInboundHandler<Byte
       timings.t5AckReceived = System.nanoTime();
     }
     final Optional<ByteBuf> nextMsg = nextHandshakeMessage(msg);
+    // [측정용] T6a: 개시자가 세션키를 도출하고 상대(tag_R)를 인증해 SUCCESS 가 된 진짜 key-ready
+    // 시점. X-Wing 은 이때 Conf 를 반환하므로 기존 T6(아래 else)는 Hello 수신까지 밀린다.
+    if (timings != null
+        && timings.t6aKeyReady == 0L
+        && handshaker.getStatus() == Handshaker.HandshakeStatus.SUCCESS) {
+      timings.t6aKeyReady = System.nanoTime();
+    }
     if (nextMsg.isPresent()) {
       ctx.writeAndFlush(nextMsg.get());
     } else if (handshaker.getStatus() != Handshaker.HandshakeStatus.SUCCESS) {

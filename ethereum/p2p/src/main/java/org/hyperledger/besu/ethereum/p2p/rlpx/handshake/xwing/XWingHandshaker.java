@@ -185,7 +185,7 @@ public class XWingHandshaker implements Handshaker {
       out.endList();
       final byte[] authEncoded = out.encoded().toArrayUnsafe();
       // [관측용 OBS#3] Auth RLP 본문 길이(설계상 ≈3.6KB). 2바이트 접두어를 더한 값이 on-wire 크기.
-      LOG.info("XW-OBS#3 firstMessage authBodyLength={}", authEncoded.length);
+      LOG.debug("XW-OBS#3 firstMessage authBodyLength={}", authEncoded.length);
       return frame(authEncoded);
     } catch (final RuntimeException e) {
       status.set(HandshakeStatus.FAILED);
@@ -203,7 +203,7 @@ public class XWingHandshaker implements Handshaker {
     buf.readBytes(chunk);
     inboundReadCount++;
     // [관측용 OBS#2] 이번 read 로 받은 조각 길이 / 지금까지 누적된 길이.
-    LOG.info(
+    LOG.debug(
         "XW-OBS#2 handleMessage chunkLength={} buffered={} initiator={} responderStep={}",
         chunk.length,
         inbound.length + chunk.length,
@@ -217,7 +217,7 @@ public class XWingHandshaker implements Handshaker {
       return Optional.empty();
     }
     // [관측용 OBS#4] 완전한 패킷 복원 완료(fragmentation 재조립 성공 증거).
-    LOG.info(
+    LOG.debug(
         "XW-OBS#4 assembled frame bodyLength={} reads={} initiator={} responderStep={}",
         body.get().length,
         inboundReadCount,
