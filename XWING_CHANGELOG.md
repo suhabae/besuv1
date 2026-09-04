@@ -112,3 +112,5 @@
 **계측 원칙 (논문 정합)**: 개시자 단일 JVM 시계 구간차만 사용, 서로 다른 JVM timestamp 직접 차감 금지(cf. Paquin–Stebila–Tamvada 2020; KEMTLS 2020, netns+netem·개시자측 end-to-end). 응답자측 명시적 키확인(`tag_I` 검증) 완료 계측은 응답자 자기 시계로 별도 추가 예정.
 
 **주의**: 위 계측/측정모드는 `System.nanoTime()` 기록과 측정모드 캐시무효화뿐, RLPx/암호/키/주소록/TCP 동작은 불변.
+
+**추가 (응답자측 AKE 완료 계측)**: inbound(응답자) 채널에도 `HandshakeTimings` 부착 → 응답자 자기 시계로 `respAKE(T6a-T5)` = Auth 수신 → 첫 SUCCESS(=X-Wing: `tag_I` 검증 완료 = **상호 명시적 키 확인 완료**; ECIES: Auth 처리 완료) 기록. 서로 다른 JVM 시계는 여전히 직접 차감하지 않음(개시자 지표는 node1.log, 응답자 지표는 node2.log). `sweep.sh`가 조건별로 node2.log의 respAKE도 추출·요약.

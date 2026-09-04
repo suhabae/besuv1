@@ -10,6 +10,7 @@ warmup=int(sys.argv[1]); csvout=sys.argv[2]; logs=sys.argv[3:]
 rx=re.compile(r'(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+).*?'
               r'TCP\(T1-T0\)=(?P<setup>[\d.]+).*?AuthAckRTT\(T5-T2\)=(?P<rtt>[\d.]+).*?'
               r'(?:keyReady\(T6a-T1\)=(?P<key>[\d.]+).*?)?'
+              r'(?:respAKE\(T6a-T5\)=(?P<resp>[\d.]+).*?)?'
               r'crypto\(T6-T1\)=(?P<hs>[\d.]+).*?helloAuth\(T7-T1\)=(?P<hello>[\d.]+).*?'
               r'peer\(T8-T1\)=(?P<peer>[\d.]+).*?peerTotal\(T8-T0\)=(?P<total>[\d.]+)'
               r'(?:.*?prep\(Tb-Ta\)=(?P<prep>[\d.]+))?(?:.*?pureTCP\(T1-Tb\)=(?P<ptcp>[\d.]+))?')
@@ -22,7 +23,7 @@ for lp in logs:
             m=rx.search(line)
             if m:
                 rows.append({'ts':m.group('ts'),
-                    'setup':f(m,'setup'),'rtt':f(m,'rtt'),'key':f(m,'key'),'hs':f(m,'hs'),
+                    'setup':f(m,'setup'),'rtt':f(m,'rtt'),'key':f(m,'key'),'resp':f(m,'resp'),'hs':f(m,'hs'),
                     'hello':f(m,'hello'),'peer':f(m,'peer'),'total':f(m,'total'),
                     'prep':f(m,'prep'),'ptcp':f(m,'ptcp')})
     except FileNotFoundError:
@@ -33,10 +34,10 @@ if n==0:
     print("no timing lines found"); sys.exit()
 with open(csvout,'w',newline='') as fh:
     w=csvmod.writer(fh)
-    w.writerow(['run','phase','ts','setup','prep','pureTcp','authAckRtt','keyReady','hs2secrets','helloAuth','peer','peerTotal'])
+    w.writerow(['run','phase','ts','setup','prep','pureTcp','authAckRtt','keyReady','respAKE','hs2secrets','helloAuth','peer','peerTotal'])
     for i,r in enumerate(rows):
         phase='cold' if i==0 else ('warmup' if i<warmup else 'steady')
-        w.writerow([i+1,phase,r['ts'],r['setup'],r['prep'],r['ptcp'],r['rtt'],r['key'],r['hs'],r['hello'],r['peer'],r['total']])
+        w.writerow([i+1,phase,r['ts'],r['setup'],r['prep'],r['ptcp'],r['rtt'],r['key'],r['resp'],r['hs'],r['hello'],r['peer'],r['total']])
 print(f"per-sample rows: {n}  (CSV -> {csvout})")
 steady=rows[warmup:]
 def stat(v):
@@ -50,7 +51,7 @@ def stat(v):
 print(f"\n=== steady summary (N={len(steady)}, ms) ===")
 print(f"{'metric':<20}{'mean':>8}{'median':>8}{'std':>7}{'min':>8}{'max':>8}{'p90':>8}{'p95':>8}")
 for name,k in [('setup(T1-T0)','setup'),('  prep(Tb-Ta)','prep'),('  pureTCP(T1-Tb)','ptcp'),
-               ('AuthAckRTT(T5-T2)','rtt'),('keyReady(T6a-T1)','key'),('hs2secrets(T6-T1)','hs'),
+               ('AuthAckRTT(T5-T2)','rtt'),('keyReady(T6a-T1)','key'),('respAKE(T6a-T5)','resp'),('hs2secrets(T6-T1)','hs'),
                ('peer(T8-T1)','peer'),('peerTotal(T8-T0)','total')]:
     r=stat([x[k] for x in steady])
     if r: print(f"{name:<20}{r[0]:>8.2f}{r[1]:>8.2f}{r[2]:>7.2f}{r[3]:>8.2f}{r[4]:>8.2f}{r[5]:>8.2f}{r[6]:>8.2f}")

@@ -387,6 +387,8 @@ public class NettyConnectionInitializer
         final CompletableFuture<PeerConnection> connectionFuture = new CompletableFuture<>();
         connectionFuture.thenAccept(
             connection -> connectSubscribers.forEach(c -> c.onConnect(connection)));
+        // [측정 전용] 응답자측 채널에도 timings 부착 → T5(Auth 수신)/T6a(tag_I 검증=SUCCESS)/T8 기록.
+        ch.attr(HandshakeTimings.KEY).set(new HandshakeTimings());
         ch.pipeline()
             .addLast(
                 timeoutHandler(

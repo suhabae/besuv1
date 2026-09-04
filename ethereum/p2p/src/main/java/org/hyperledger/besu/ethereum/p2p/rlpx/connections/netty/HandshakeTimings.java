@@ -54,6 +54,8 @@ final class HandshakeTimings {
         + us(t2AuthSent, t5AckReceived)
         + " keyReady(T6a-T1)="
         + us(t1ChannelActive, t6aKeyReady)
+        + " respAKE(T6a-T5)="
+        + us(t5AckReceived, t6aKeyReady)
         + " crypto(T6-T1)="
         + us(t1ChannelActive, t6SecretsReady)
         + " helloAuth(T7-T1)="
