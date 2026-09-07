@@ -1,0 +1,13 @@
+# 런타임 상태 (실행 시 자동 재생성) — 커밋 금지
+*/data/database/
+*/data/caches/
+*/data/DATABASE_METADATA.json
+*/data/VERSION_METADATA.json
+*/data/besu.networks
+*/data/besu.ports
+# 개인키 (보안: git 제외, 수동 복사) — .pub 은 포함
+*/data/key
+*/data/xwing-key
+# 노드 실행 로그 / 백업
+*.log
+*.netnsbak
