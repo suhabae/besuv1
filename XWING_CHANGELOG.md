@@ -114,3 +114,35 @@
 **주의**: 위 계측/측정모드는 `System.nanoTime()` 기록과 측정모드 캐시무효화뿐, RLPx/암호/키/주소록/TCP 동작은 불변.
 
 **추가 (응답자측 AKE 완료 계측)**: inbound(응답자) 채널에도 `HandshakeTimings` 부착 → 응답자 자기 시계로 `respAKE(T6a-T5)` = Auth 수신 → 첫 SUCCESS(=X-Wing: `tag_I` 검증 완료 = **상호 명시적 키 확인 완료**; ECIES: Auth 처리 완료) 기록. 서로 다른 JVM 시계는 여전히 직접 차감하지 않음(개시자 지표는 node1.log, 응답자 지표는 node2.log). `sweep.sh`가 조건별로 node2.log의 respAKE도 추출·요약.
+
+---
+
+## [measure/ecies-tcp] Phase 3-B: 응답자 respAKE 통계 오염 발견 및 파서 교정 (재측정 불필요)
+
+**발견 (GitHub raw 로그 직접 대조로 확정)**
+- `sweep.sh`의 응답자 수집이 `grep 'peerTotal(T8-T0)='` 로 node2.log의 **모든** handshake timing 줄을 긁은 뒤 `respAKE`만 뽑아 통계에 넣었음.
+- 그런데 node2.log에는 **Node2가 우연히 initiator가 된 연결**(빠른 재연결 사이클 중 Node2측 P2P 연결유지/탐색이 Node1에게 먼저 outbound 다이얼)의 줄이 섞임. 이 줄은 `TCP(T1-T0)=숫자`(개시자형), respAKE≈0.5~2ms(개시자측: ACK 수신→키). 진짜 responder 줄은 `TCP(T1-T0)=n/a`, respAKE≈RTT.
+- 실측 혼입 개수: xwing2 rtt0/10/30/50 = 6/6/9/**28**, ecies2 = 5/6/8/7. (진짜 responder는 전 조건 정확히 **115개**로 일정 = warmup15+measure100.) → 과거 "respAKE N=128은 hsFail 때문"이라던 설명은 **틀림**. hsFail(재연결 실패)은 응답자 timing 줄 자체를 만들지 않으므로 respAKE N에 애초에 들어오지 않음. N 부풀림의 원인은 **100% 역할 혼입**.
+
+**영향 (중요)**
+- **중앙값은 견고**(혼입<50%): 예) X-Wing rtt50 median 52.74→52.89. 기존 보고서의 median 기반 해석·회귀(응답자 respAKE X-Wing≈3.3+0.99·RTT, ECIES≈6.5−0.02·RTT)는 **그대로 유효**.
+- **평균/표준편차/N은 왜곡**되어 있었음: X-Wing rtt50 mean 42.90→**53.08**(≈0.9ms 값 28개가 끌어내림, 19% 과소). 교정 후 std 0.78~1.05로 매우 타이트.
+- **Node1(개시자) 지표는 무오염**: `parse-timing.sh` 정규식이 `TCP(T1-T0)=([\d.]+)`로 **숫자를 강제**해 node1.log에 섞인 responder 줄(`=n/a`)을 자동 배제. 실제 CSV steady 행수 전 조건 정확히 100. prep/pureTCP/AuthAckRTT/keyReady/peerTotal 신뢰.
+- 즉 raw 로그·계측코드는 정상, **문제는 응답자 로그의 역할 분류(파서)뿐**.
+
+**수정 (측정 파이프라인만, Besu 프로덕션/암호/계측 무변경)**
+- `sweep.sh` 응답자 python: 줄 채택 조건에 `'TCP(T1-T0)=n/a' in ln`(진짜 responder만) 추가.
+- 신규 `netns/reparse-resp.sh`: 저장된 raw `.resp.timing`에서 진짜 responder만 골라 respAKE 재계산 + 조건별 `*.respAKE.csv`(run/phase/respAKE_ms) 산출. **재측정 없이 원자료에서 정정값 도출**.
+- `setup-netns.sh`: `if [ "$3" = ... ]` → `"${3:-}"`(선택 인자 방어, 결과엔 영향 없던 잠재버그).
+
+**교정 후 응답자 respAKE (진짜 responder, warmup15폐기, steady N=100)**
+| RTT | X-Wing median(mean±std) | ECIES median(mean±std) |
+|--|--|--|
+|0 | 3.62 (4.45±2.73) | 7.29 (8.36±4.18) |
+|10| 12.71 (13.04±1.05) | 5.16 (5.17±2.05) |
+|30| 33.35 (33.34±0.78) | 5.97 (6.28±2.30) |
+|50| 52.89 (53.08±0.97) | 5.60 (5.82±2.61) |
+
+회귀(median): X-Wing 3.31+0.993·RTT (≈1왕복, Conf 대기), ECIES 6.46−0.020·RTT (평평). **결론 불변, 오히려 더 선명**.
+
+**선택(미적용, 논문용 권장)**: DeFramer 로그에 `role=INITIATOR|RESPONDER`와 `runId` 추가 → 역할 분류를 파싱 대신 원천 태깅으로, 개시자/응답자 run 1:1 대응. 지금은 `TCP=n/a` 규칙만으로 정확 분류되어 재측정 불요.

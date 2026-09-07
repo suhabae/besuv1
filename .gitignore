@@ -37,3 +37,13 @@ jitpack.yml
 **/**/.factorypath
 **/**/.jqwik-database
 .workspaces/
+
+# --- PQ-RLPx 측정 스크래치(커밋 제외) ---
+/node1-xwing*.log
+/node2-xwing*.log
+/node2.log
+/ecies-run2.csv
+/xwing-run2.csv
+/measure-collect.ps1
+/parse-timing.ps1
+/netns/tag_I

@@ -54,6 +54,8 @@ for rtt in $RTTS; do
 import sys,re,math
 w=int(sys.argv[1]); f=sys.argv[2]; vals=[]
 for ln in open(f,encoding='utf-8',errors='ignore'):
+    if 'peerTotal(T8-T0)=' not in ln: continue
+    if 'TCP(T1-T0)=n/a' not in ln: continue   # 진짜 responder만 (Node2가 initiator였던 줄 제거)
     m=re.search(r'respAKE\(T6a-T5\)=([\d.]+)', ln)
     if m: vals.append(float(m.group(1))/1000)
 vals=vals[w:]; s=sorted(vals); n=len(s)

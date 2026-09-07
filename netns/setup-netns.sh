@@ -35,7 +35,7 @@ case "$cmd" in
     ;;
   delay)
     d="$2"; rate=""
-    if [ "$3" = "rate" ]; then rate="rate $4"; fi
+    if [ "${3:-}" = "rate" ]; then rate="rate $4"; fi
     ip netns exec $NS1 tc qdisc replace dev $V1 root netem delay "$d" $rate
     ip netns exec $NS2 tc qdisc replace dev $V2 root netem delay "$d" $rate
     echo "netem set: delay $d each way (RTT ~= 2x $d) $rate"
