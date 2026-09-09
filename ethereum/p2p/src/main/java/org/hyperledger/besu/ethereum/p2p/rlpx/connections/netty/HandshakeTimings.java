@@ -44,6 +44,8 @@ final class HandshakeTimings {
   long t8PeerEstablished; // peer 확립(connectFuture 완료)
   long tPrepStart; // [측정] 개시자 firstMessage 생성 직전 (Ta)
   long tPrepEnd;   // [측정] 개시자 firstMessage 생성 직후 (Tb)
+  long wallConnectStart;    // [mutual] connect() 직전 벽시계(ms, 개시자만) — 같은 호스트 공유시계
+  long wallPeerEstablished; // [mutual] peer 확립 벽시계(ms, 양측) — max()로 상호 완료 계산
 
   /** 개시자 JVM 내부 구간 차이(마이크로초). 아직 안 찍힌 구간은 -1. */
   String summaryMicros() {
@@ -67,7 +69,13 @@ final class HandshakeTimings {
         + " prep(Tb-Ta)="
         + us(tPrepStart, tPrepEnd)
         + " pureTCP(T1-Tb)="
-        + us(tPrepEnd, t1ChannelActive);
+        + us(tPrepEnd, t1ChannelActive)
+        + " role="
+        + (t0ConnectStart != 0L ? "INITIATOR" : "RESPONDER")
+        + " wallStart="
+        + (wallConnectStart == 0L ? "n/a" : Long.toString(wallConnectStart))
+        + " wallDone="
+        + (wallPeerEstablished == 0L ? "n/a" : Long.toString(wallPeerEstablished));
   }
 
   private static String us(final long start, final long end) {

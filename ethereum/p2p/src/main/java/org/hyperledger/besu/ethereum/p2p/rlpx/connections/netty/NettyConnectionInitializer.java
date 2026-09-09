@@ -338,6 +338,7 @@ public class NettyConnectionInitializer
     // [측정용] T0: TCP connect 시작 시각을 기록하고 채널 속성으로 부착(개시자 측만 측정)
     final HandshakeTimings timings = new HandshakeTimings();
     timings.t0ConnectStart = System.nanoTime();
+    timings.wallConnectStart = System.currentTimeMillis(); // [mutual]
     new Bootstrap()
         .group(workers)
         .channel(NioSocketChannel.class)

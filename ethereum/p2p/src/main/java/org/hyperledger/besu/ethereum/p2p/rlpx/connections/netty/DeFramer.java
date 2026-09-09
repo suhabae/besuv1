@@ -255,6 +255,7 @@ final class DeFramer extends ByteToMessageDecoder {
         // [측정용] T8: peer 확립 직전 시각 기록 + 개시자 측 구간 요약 로그
         if (timings != null) {
           timings.t8PeerEstablished = System.nanoTime();
+          timings.wallPeerEstablished = System.currentTimeMillis(); // [mutual]
           LOG.info("Handshake timing nodeId={} {}", authenticatedNodeId, timings.summaryMicros());
         }
         connectFuture.complete(connection);
