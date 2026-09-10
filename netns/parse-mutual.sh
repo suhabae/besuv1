@@ -25,6 +25,8 @@ def grab(path, role):
 I=grab(log1,'INITIATOR'); R=grab(log2,'RESPONDER')
 n=min(len(I),len(R))
 print(f"개시자 INITIATOR 줄={len(I)}, 응답자 RESPONDER 줄={len(R)}, 짝지음={n}")
+if n < W+M:
+    print(f"  ⚠⚠ WARNING: 짝지은 표본 {n}개 < warmup{W}+measure{M}={W+M} → mutual N 부족! 버퍼↑ 후 재측정 필요")
 rows=[]
 for k in range(n):
     _,sI,dI=I[k]; _,_,dR=R[k]

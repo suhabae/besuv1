@@ -2,11 +2,13 @@
 # parse-timing.sh <warmup> <csvout> <log1> [log2 ...]
 # Parses Besu "Handshake timing" lines -> per-sample CSV + steady summary.
 # Units: log is microseconds; output ms.
+# 환경변수 TARGET_N: 지정하면 steady를 정확히 그 개수로 자름(논문용 표본 통일). 부족하면 경고.
 set -u
 WARMUP="$1"; CSV="$2"; shift 2
 python3 - "$WARMUP" "$CSV" "$@" <<'PY'
-import sys, re, math, csv as csvmod
+import sys, re, math, os, csv as csvmod
 warmup=int(sys.argv[1]); csvout=sys.argv[2]; logs=sys.argv[3:]
+target=int(os.environ.get('TARGET_N','0') or 0)
 rx=re.compile(r'(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+).*?'
               r'TCP\(T1-T0\)=(?P<setup>[\d.]+).*?AuthAckRTT\(T5-T2\)=(?P<rtt>[\d.]+).*?'
               r'(?:keyReady\(T6a-T1\)=(?P<key>[\d.]+).*?)?'
@@ -32,14 +34,22 @@ rows.sort(key=lambda r:r['ts'])
 n=len(rows)
 if n==0:
     print("no timing lines found"); sys.exit()
+steady=rows[warmup:]
+if target>0:
+    if len(steady) < target:
+        print(f"⚠⚠ WARNING: steady 표본 {len(steady)}개 < TARGET_N {target}개 → N 부족! 이 조건은 버퍼↑ 후 재측정 필요")
+    else:
+        steady=steady[:target]
 with open(csvout,'w',newline='') as fh:
     w=csvmod.writer(fh)
     w.writerow(['run','phase','ts','setup','prep','pureTcp','authAckRtt','keyReady','respAKE','hs2secrets','helloAuth','peer','peerTotal'])
+    steady_ids=set(id(r) for r in steady)
     for i,r in enumerate(rows):
-        phase='cold' if i==0 else ('warmup' if i<warmup else 'steady')
+        if i<warmup: phase='cold' if i==0 else 'warmup'
+        elif id(r) in steady_ids: phase='steady'
+        else: phase='excess'   # 버퍼 초과분(집계 제외)
         w.writerow([i+1,phase,r['ts'],r['setup'],r['prep'],r['ptcp'],r['rtt'],r['key'],r['resp'],r['hs'],r['hello'],r['peer'],r['total']])
-print(f"per-sample rows: {n}  (CSV -> {csvout})")
-steady=rows[warmup:]
+print(f"per-sample rows: {n}  (steady={len(steady)}, CSV -> {csvout})")
 def stat(v):
     s=sorted(x for x in v if x is not None); c=len(s)
     if c==0: return None

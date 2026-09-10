@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # sweep.sh -- RTT sweep for ONE protocol. RUN AS ROOT (sudo); nodes already running.
-#   sudo bash sweep.sh <label> <initiatorLog> [MEASURE=100] [WARMUP=10] [SETTLE=1.0] [RTTS="0 10 30 50"]
+#   sudo bash sweep.sh <label> <initiatorLog> [MEASURE=100] [WARMUP=10] [SETTLE=1.0] [RTTS="0 10 30 50"] [BUFFER=10]
 # Initiator metrics -> results/<label>-rtt<RTT>.{timing,csv}
 # Responder respAKE (Node2 own clock) -> results/<label>-rtt<RTT>.resp.{timing} + printed summary
+# 논문용 표본 통일: warmup+MEASURE+BUFFER 개를 모으고, 개시자 줄만 필터 후 정확히 MEASURE개로 자름.
 set -u
 DIR=/mnt/c/Users/hanati/IdeaProjects/besu/netns
 RES="$DIR/results"; mkdir -p "$RES"
@@ -11,10 +12,11 @@ ENODE="enode://6f73be34d11d94b69c499d2d709366a0b3b637faa71b9e5d17a8707c6d98033c2
 MARK='peerTotal(T8-T0)='
 
 LABEL="${1:?need label}"; LOG="${2:?need initiator log path}"
-MEASURE="${3:-100}"; WARMUP="${4:-10}"; SETTLE="${5:-1.0}"; RTTS="${6:-0 10 30 50}"
+MEASURE="${3:-100}"; WARMUP="${4:-10}"; SETTLE="${5:-1.0}"; RTTS="${6:-0 10 30 50}"; BUFFER="${7:-10}"
 RLOG="${LOG/node1/node2}"   # responder log
 [ -f "$LOG" ] || { echo "initiator log not found: $LOG"; exit 1; }
-want=$(( WARMUP + MEASURE ))
+COLLECT=$(( MEASURE + BUFFER ))          # 넉넉히 모을 measure 수(개시자 100 확보용 버퍼 포함)
+want=$(( WARMUP + COLLECT ))
 
 for rtt in $RTTS; do
   echo; echo "================ $LABEL  RTT=${rtt}ms ================"
@@ -33,16 +35,16 @@ for rtt in $RTTS; do
 
   base=$(grep -c "$MARK" "$LOG" 2>/dev/null); base=${base:-0}
   rbase=0; [ -f "$RLOG" ] && { rbase=$(grep -c "$MARK" "$RLOG" 2>/dev/null); rbase=${rbase:-0}; }
-  echo "collecting $want handshakes (warmup $WARMUP + measure $MEASURE) ..."
-  ip netns exec ns1 bash "$DIR/measure-collect.sh" "$RPC" "$ENODE" "$LOG" "$WARMUP" "$MEASURE" "$SETTLE" 20 | sed 's/^/    /'
+  echo "collecting $want handshakes (warmup $WARMUP + measure $MEASURE + buffer $BUFFER) ..."
+  ip netns exec ns1 bash "$DIR/measure-collect.sh" "$RPC" "$ENODE" "$LOG" "$WARMUP" "$COLLECT" "$SETTLE" 20 | sed 's/^/    /'
 
   # initiator side
   after=$(grep -c "$MARK" "$LOG" 2>/dev/null); after=${after:-0}
   new=$(( after - base ))
   tfile="$RES/${LABEL}-rtt${rtt}.timing"
   grep "$MARK" "$LOG" | tail -n "$new" > "$tfile"
-  echo "extracted $new initiator lines -> results/${LABEL}-rtt${rtt}.timing"
-  bash "$DIR/parse-timing.sh" "$WARMUP" "$RES/${LABEL}-rtt${rtt}.csv" "$tfile"
+  echo "extracted $new initiator-side lines -> results/${LABEL}-rtt${rtt}.timing"
+  TARGET_N=$MEASURE bash "$DIR/parse-timing.sh" "$WARMUP" "$RES/${LABEL}-rtt${rtt}.csv" "$tfile"
 
   # responder side (Node2 own clock): respAKE = Auth received -> tag_I verified
   if [ -f "$RLOG" ]; then
@@ -50,15 +52,19 @@ for rtt in $RTTS; do
     rnew=$(( rafter - rbase ))
     rtfile="$RES/${LABEL}-rtt${rtt}.resp.timing"
     grep "$MARK" "$RLOG" | tail -n "$rnew" > "$rtfile"
-    python3 - "$WARMUP" "$rtfile" <<'PY'
-import sys,re,math
-w=int(sys.argv[1]); f=sys.argv[2]; vals=[]
+    TARGET_N=$MEASURE python3 - "$WARMUP" "$rtfile" <<'PY'
+import sys,re,math,os
+w=int(sys.argv[1]); f=sys.argv[2]; t=int(os.environ.get('TARGET_N','0') or 0); vals=[]
 for ln in open(f,encoding='utf-8',errors='ignore'):
     if 'peerTotal(T8-T0)=' not in ln: continue
     if 'TCP(T1-T0)=n/a' not in ln: continue   # 진짜 responder만 (Node2가 initiator였던 줄 제거)
     m=re.search(r'respAKE\(T6a-T5\)=([\d.]+)', ln)
     if m: vals.append(float(m.group(1))/1000)
-vals=vals[w:]; s=sorted(vals); n=len(s)
+vals=vals[w:]
+if t>0:
+    if len(vals)<t: print(f"  ⚠⚠ responder respAKE 표본 {len(vals)}개 < TARGET_N {t}개 → N 부족")
+    else: vals=vals[:t]
+s=sorted(vals); n=len(s)
 if n:
     med=s[n//2] if n%2 else (s[n//2-1]+s[n//2])/2
     p90=s[min(n-1,math.ceil(0.9*n)-1)]
