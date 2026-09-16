@@ -95,6 +95,7 @@ final class HandshakeHandlerOutbound extends AbstractHandshakeHandler {
       timings.tPrepStart = this.tPrepStart;
       timings.tPrepEnd = this.tPrepEnd;
       timings.t1ChannelActive = System.nanoTime();
+      timings.authBytes = first.readableBytes(); // [측정] 개시자 Auth on-wire 크기
     }
     ctx.writeAndFlush(first)
         .addListener(

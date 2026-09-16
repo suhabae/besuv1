@@ -113,6 +113,15 @@ abstract class AbstractHandshakeHandler extends SimpleChannelInboundHandler<Byte
       timings.t6aKeyReady = System.nanoTime();
     }
     if (nextMsg.isPresent()) {
+      // [측정] 이 노드가 보내는 응답 메시지 크기: 개시자=Conf(X-Wing), 응답자=ACK
+      if (timings != null) {
+        final int sz = nextMsg.get().readableBytes();
+        if (timings.t0ConnectStart != 0L) {
+          timings.confBytes = sz;
+        } else {
+          timings.ackBytes = sz;
+        }
+      }
       ctx.writeAndFlush(nextMsg.get());
     } else if (handshaker.getStatus() != Handshaker.HandshakeStatus.SUCCESS) {
       LOG.debug("waiting for more bytes");

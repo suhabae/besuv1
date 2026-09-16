@@ -46,6 +46,9 @@ final class HandshakeTimings {
   long tPrepEnd;   // [측정] 개시자 firstMessage 생성 직후 (Tb)
   long wallConnectStart;    // [mutual] connect() 직전 벽시계(ms, 개시자만) — 같은 호스트 공유시계
   long wallPeerEstablished; // [mutual] peer 확립 벽시계(ms, 양측) — max()로 상호 완료 계산
+  int authBytes; // [측정] 이 노드가 보낸 Auth 프레임 on-wire 크기(bytes)
+  int ackBytes;  // [측정] 이 노드가 보낸 ACK  프레임 on-wire 크기(bytes)
+  int confBytes; // [측정] 이 노드가 보낸 Conf 프레임 on-wire 크기(bytes, X-Wing만)
 
   /** 개시자 JVM 내부 구간 차이(마이크로초). 아직 안 찍힌 구간은 -1. */
   String summaryMicros() {
@@ -70,6 +73,12 @@ final class HandshakeTimings {
         + us(tPrepStart, tPrepEnd)
         + " pureTCP(T1-Tb)="
         + us(tPrepEnd, t1ChannelActive)
+        + " authB="
+        + authBytes
+        + " ackB="
+        + ackBytes
+        + " confB="
+        + confBytes
         + " role="
         + (t0ConnectStart != 0L ? "INITIATOR" : "RESPONDER")
         + " wallStart="
