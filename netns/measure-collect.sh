@@ -17,7 +17,7 @@ peers() {
   local h; h="$(rpc net_peerCount '[]' 2>/dev/null | grep -o '0x[0-9a-fA-F]\+' | head -1)"
   [ -z "$h" ] && { echo -1; return; }; echo $(( 16#${h#0x} ))
 }
-tcount() { grep -c 'peerTotal(T8-T0)=' "$LOG" 2>/dev/null || true; }
+tcount() { grep 'peerTotal(T8-T0)=' "$LOG" 2>/dev/null | grep -c 'role=INITIATOR' || true; }
 # wait_peers <target>: return 0 if reached within 20s, else 1
 wait_peers() { local t=0; while [ $t -lt 400 ]; do [ "$(peers)" = "$1" ] && return 0; sleep 0.05; t=$((t+1)); done; return 1; }
 # wait_new_timing <baseline_count>: return 0 when count > baseline within TMO sec
